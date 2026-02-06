@@ -517,8 +517,13 @@ const Sidebar = ({ activeView }) => {
                   {allFolders.map(folder => (
                     <button
                       key={folder.id}
-                      onClick={() => setSelectedFolder(folder)}
-                      className={`w-full text-left px-2 py-1.5 rounded text-sm flex items-center gap-2 transition-colors
+                      type="button"
+                      onClick={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        setSelectedFolder(folder);
+                      }}
+                      className={`w-full text-left px-2 py-1.5 rounded text-sm flex items-center gap-2 transition-colors cursor-pointer
                         ${selectedFolder?.id === folder.id ? 'bg-primary/15' : 'hover:bg-muted'}`}
                     >
                       <Folder size={14} className="text-warning" />

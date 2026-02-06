@@ -11,7 +11,8 @@ import {
   WifiOff,
   ChevronUp,
   Key,
-  Columns
+  Columns,
+  AlertTriangle
 } from 'lucide-react';
 import { useGraphQL, useTheme } from '../App';
 import { Button } from './ui/button';
@@ -61,76 +62,61 @@ const StatusBar = ({ onToggleSidebar }) => {
     setSchemaLoaded(false);
     setTimeout(() => {
       setSchemaLoaded(true);
-      toast.success('Schema refreshed successfully');
+      toast.success('Schema refreshed');
     }, 1500);
   };
 
   const handleSetSecret = () => {
     if (!secretKey.trim() || !secretValue.trim()) return;
     setSecret(secretKey, secretValue);
-    toast.success(`Secret "${secretKey}" saved securely`);
+    toast.success(`Secret "${secretKey}" saved`);
     setSecretKey('');
     setSecretValue('');
     setIsSecretDialogOpen(false);
   };
 
-  const getEnvBadgeClass = () => {
-    switch (environments.active) {
-      case 'dev': return 'env-dev';
-      case 'staging': return 'env-staging';
-      case 'prod': return 'env-prod';
-      default: return '';
-    }
-  };
-
   return (
     <>
-      <div className="h-6 bg-vscode-statusbar flex items-center justify-between px-2 text-xs text-primary-foreground shrink-0">
+      <div className="h-[22px] bg-vscode-statusbar flex items-center justify-between text-[11px] text-white/90 shrink-0">
         {/* Left section */}
-        <div className="flex items-center gap-1">
-          {/* Sidebar toggle */}
-          <button 
-            onClick={onToggleSidebar}
-            className="px-2 py-0.5 hover:bg-white/10 rounded transition-colors flex items-center gap-1"
-          >
+        <div className="flex items-center h-full">
+          {/* Remote indicator */}
+          <button className="h-full px-2 hover:bg-white/10 flex items-center gap-1 transition-colors">
             <Columns size={12} />
           </button>
 
           {/* Git branch */}
-          <button className="px-2 py-0.5 hover:bg-white/10 rounded transition-colors flex items-center gap-1">
+          <button className="h-full px-2 hover:bg-white/10 flex items-center gap-1.5 transition-colors">
             <GitBranch size={12} />
             <span>main</span>
           </button>
 
-          {/* Sync status */}
-          <button className="px-2 py-0.5 hover:bg-white/10 rounded transition-colors flex items-center gap-1">
-            <RefreshCw size={12} />
-            <span>Sync</span>
+          {/* Sync */}
+          <button className="h-full px-2 hover:bg-white/10 flex items-center gap-1 transition-colors">
+            <RefreshCw size={11} />
+          </button>
+
+          {/* Problems */}
+          <button className="h-full px-2 hover:bg-white/10 flex items-center gap-1 transition-colors">
+            <AlertCircle size={12} />
+            <span>0</span>
+            <AlertTriangle size={12} />
+            <span>0</span>
           </button>
         </div>
 
-        {/* Center section */}
-        <div className="flex items-center gap-2">
-          {/* GraphQL Runner label */}
-          <div className="flex items-center gap-1.5 px-2">
-            <Database size={12} />
-            <span className="font-medium">GraphQL Runner</span>
-          </div>
-        </div>
-
         {/* Right section */}
-        <div className="flex items-center gap-1">
+        <div className="flex items-center h-full">
           {/* Collections count */}
-          <button className="px-2 py-0.5 hover:bg-white/10 rounded transition-colors flex items-center gap-1">
-            <span>📁 {collections.length} Collections</span>
-            <span className="text-white/60">•</span>
-            <span>{totalRequests} Requests</span>
+          <button className="h-full px-2 hover:bg-white/10 flex items-center gap-1.5 transition-colors">
+            <Database size={12} />
+            <span>{collections.length} Collections · {totalRequests} Requests</span>
           </button>
 
           {/* Environment selector */}
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <button className="px-2 py-0.5 hover:bg-white/10 rounded transition-colors flex items-center gap-1.5">
+              <button className="h-full px-2 hover:bg-white/10 flex items-center gap-1.5 transition-colors">
                 <div className={`w-2 h-2 rounded-full 
                   ${environments.active === 'dev' ? 'bg-green-400' : 
                     environments.active === 'staging' ? 'bg-yellow-400' : 'bg-red-400'}`} 
@@ -164,17 +150,17 @@ const StatusBar = ({ onToggleSidebar }) => {
           {/* Schema status */}
           <button 
             onClick={handleRefreshSchema}
-            className="px-2 py-0.5 hover:bg-white/10 rounded transition-colors flex items-center gap-1.5"
+            className="h-full px-2 hover:bg-white/10 flex items-center gap-1.5 transition-colors"
           >
             {schemaLoaded ? (
               <>
                 <CheckCircle2 size={12} className="text-green-400" />
-                <span>Schema: Loaded</span>
+                <span>Schema</span>
               </>
             ) : (
               <>
                 <RefreshCw size={12} className="animate-spin" />
-                <span>Loading Schema...</span>
+                <span>Loading...</span>
               </>
             )}
           </button>
@@ -182,13 +168,13 @@ const StatusBar = ({ onToggleSidebar }) => {
           {/* Set Secret */}
           <button 
             onClick={() => setIsSecretDialogOpen(true)}
-            className="px-2 py-0.5 hover:bg-white/10 rounded transition-colors flex items-center gap-1"
+            className="h-full px-2 hover:bg-white/10 flex items-center gap-1 transition-colors"
           >
             <Key size={12} />
           </button>
 
           {/* Notifications */}
-          <button className="px-2 py-0.5 hover:bg-white/10 rounded transition-colors">
+          <button className="h-full px-2 hover:bg-white/10 flex items-center transition-colors">
             <Bell size={12} />
           </button>
         </div>
@@ -225,18 +211,20 @@ const StatusBar = ({ onToggleSidebar }) => {
               />
             </div>
             {secretKey && (
-              <div className="text-xs text-muted-foreground p-2 bg-muted rounded">
-                Usage: <code className="text-primary">${'{'}secret:{secretKey}{'}'}</code>
+              <div className="text-xs text-muted-foreground p-2 bg-muted rounded font-mono">
+                Usage: ${'{'}secret:{secretKey}{'}'}
               </div>
             )}
-            <div className="text-xs text-muted-foreground">
-              <p className="font-medium mb-1">Currently stored secrets:</p>
-              <div className="flex flex-wrap gap-1">
-                {Object.keys(secrets).map(key => (
-                  <Badge key={key} variant="secondary" className="text-xs">{key}</Badge>
-                ))}
+            {Object.keys(secrets).length > 0 && (
+              <div className="text-xs text-muted-foreground">
+                <p className="font-medium mb-1">Stored secrets:</p>
+                <div className="flex flex-wrap gap-1">
+                  {Object.keys(secrets).map(key => (
+                    <Badge key={key} variant="secondary" className="text-xs font-mono">{key}</Badge>
+                  ))}
+                </div>
               </div>
-            </div>
+            )}
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setIsSecretDialogOpen(false)}>

@@ -12,7 +12,9 @@ import {
   Trash2,
   Edit2,
   Copy,
-  Search
+  Search,
+  Database,
+  FolderPlus
 } from 'lucide-react';
 import { useGraphQL } from '../App';
 import { Button } from './ui/button';
@@ -43,11 +45,14 @@ const Sidebar = ({ activeView }) => {
     activeRequest 
   } = useGraphQL();
   
-  const [expandedCollections, setExpandedCollections] = useState(['col-1', 'col-2']);
-  const [expandedFolders, setExpandedFolders] = useState(['folder-1', 'folder-2', 'folder-3']);
+  const [expandedCollections, setExpandedCollections] = useState([]);
+  const [expandedFolders, setExpandedFolders] = useState([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [isNewRequestDialogOpen, setIsNewRequestDialogOpen] = useState(false);
+  const [isNewCollectionDialogOpen, setIsNewCollectionDialogOpen] = useState(false);
   const [newRequestName, setNewRequestName] = useState('');
+  const [newCollectionName, setNewCollectionName] = useState('');
+  const [newFolderName, setNewFolderName] = useState('');
   const [selectedFolder, setSelectedFolder] = useState(null);
 
   const toggleCollection = (colId) => {
@@ -64,7 +69,7 @@ const Sidebar = ({ activeView }) => {
 
   const getRequestIcon = (type) => {
     const colors = {
-      query: 'text-primary',
+      query: 'text-syntax-variable',
       mutation: 'text-accent',
       subscription: 'text-success'
     };
@@ -72,6 +77,10 @@ const Sidebar = ({ activeView }) => {
   };
 
   const handleExport = () => {
+    if (collections.length === 0) {
+      toast.error('No collections to export');
+      return;
+    }
     const data = JSON.stringify(collections, null, 2);
     const blob = new Blob([data], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
@@ -94,8 +103,14 @@ const Sidebar = ({ activeView }) => {
         reader.onload = (e) => {
           try {
             const imported = JSON.parse(e.target.result);
-            setCollections(prev => [...prev, ...imported]);
-            toast.success('Collections imported successfully');
+            if (Array.isArray(imported)) {
+              setCollections(prev => [...prev, ...imported]);
+              // Auto expand imported collections
+              setExpandedCollections(prev => [...prev, ...imported.map(c => c.id)]);
+              toast.success(`Imported ${imported.length} collection(s)`);
+            } else {
+              toast.error('Invalid collection format');
+            }
           } catch (err) {
             toast.error('Invalid JSON file');
           }
@@ -104,6 +119,31 @@ const Sidebar = ({ activeView }) => {
       }
     };
     input.click();
+  };
+
+  const handleCreateCollection = () => {
+    if (!newCollectionName.trim()) return;
+    
+    const newCollection = {
+      id: `col-${Date.now()}`,
+      name: newCollectionName,
+      folders: newFolderName.trim() ? [{
+        id: `folder-${Date.now()}`,
+        name: newFolderName,
+        requests: []
+      }] : []
+    };
+
+    setCollections(prev => [...prev, newCollection]);
+    setExpandedCollections(prev => [...prev, newCollection.id]);
+    if (newFolderName.trim()) {
+      setExpandedFolders(prev => [...prev, newCollection.folders[0].id]);
+    }
+    
+    setNewCollectionName('');
+    setNewFolderName('');
+    setIsNewCollectionDialogOpen(false);
+    toast.success(`Created collection "${newCollectionName}"`);
   };
 
   const handleCreateRequest = () => {
@@ -146,11 +186,13 @@ const Sidebar = ({ activeView }) => {
       })).filter(col => col.folders.length > 0)
     : collections;
 
+  const allFolders = collections.flatMap(col => col.folders);
+
   if (activeView !== 'graphql') {
     return (
-      <div className="h-full bg-vscode-sidebar border-r border-border flex flex-col">
-        <div className="p-4 border-b border-border">
-          <h2 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+      <div className="h-full bg-vscode-sidebar flex flex-col">
+        <div className="px-4 py-2 border-b border-border">
+          <h2 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
             {activeView === 'explorer' && 'Explorer'}
             {activeView === 'search' && 'Search'}
             {activeView === 'git' && 'Source Control'}
@@ -160,25 +202,119 @@ const Sidebar = ({ activeView }) => {
           </h2>
         </div>
         <div className="flex-1 flex items-center justify-center p-4">
-          <p className="text-sm text-muted-foreground text-center">
-            {activeView === 'graphql' ? 'Select a collection to get started' : `${activeView} panel content`}
+          <p className="text-xs text-muted-foreground text-center">
+            Panel content
           </p>
         </div>
       </div>
     );
   }
 
-  return (
-    <div className="h-full bg-vscode-sidebar border-r border-border flex flex-col">
-      {/* Header */}
-      <div className="p-3 border-b border-border">
-        <div className="flex items-center justify-between mb-3">
-          <h2 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+  // Empty state when no collections
+  if (collections.length === 0) {
+    return (
+      <div className="h-full bg-vscode-sidebar flex flex-col">
+        {/* Header */}
+        <div className="px-4 py-2 border-b border-border flex items-center justify-between">
+          <h2 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
             GraphQL Collections
           </h2>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <Button variant="ghost" size="icon" className="h-6 w-6">
+              <Button variant="ghost" size="icon" className="h-5 w-5">
+                <MoreHorizontal size={14} />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-48">
+              <DropdownMenuItem onClick={handleImport}>
+                <Upload size={14} className="mr-2" />
+                Import Collection
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
+
+        {/* Empty state */}
+        <div className="flex-1 flex flex-col items-center justify-center p-6">
+          <Database size={40} className="text-muted-foreground/30 mb-4" />
+          <h3 className="text-sm font-medium text-foreground mb-1">No Collections</h3>
+          <p className="text-xs text-muted-foreground text-center mb-4">
+            Create a collection to organize your GraphQL requests
+          </p>
+          <div className="space-y-2 w-full max-w-[200px]">
+            <Button 
+              onClick={() => setIsNewCollectionDialogOpen(true)} 
+              className="w-full h-8 text-xs"
+              size="sm"
+            >
+              <FolderPlus size={14} className="mr-1.5" />
+              New Collection
+            </Button>
+            <Button 
+              variant="outline"
+              onClick={handleImport} 
+              className="w-full h-8 text-xs"
+              size="sm"
+            >
+              <Upload size={14} className="mr-1.5" />
+              Import JSON
+            </Button>
+          </div>
+        </div>
+
+        {/* New Collection Dialog */}
+        <Dialog open={isNewCollectionDialogOpen} onOpenChange={setIsNewCollectionDialogOpen}>
+          <DialogContent className="sm:max-w-md">
+            <DialogHeader>
+              <DialogTitle>Create Collection</DialogTitle>
+              <DialogDescription>
+                Create a new collection to organize your GraphQL requests.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="space-y-4 py-4">
+              <div className="space-y-2">
+                <label className="text-sm font-medium">Collection Name</label>
+                <Input
+                  placeholder="e.g., My API"
+                  value={newCollectionName}
+                  onChange={(e) => setNewCollectionName(e.target.value)}
+                  autoFocus
+                />
+              </div>
+              <div className="space-y-2">
+                <label className="text-sm font-medium">First Folder (optional)</label>
+                <Input
+                  placeholder="e.g., User Queries"
+                  value={newFolderName}
+                  onChange={(e) => setNewFolderName(e.target.value)}
+                />
+              </div>
+            </div>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setIsNewCollectionDialogOpen(false)}>
+                Cancel
+              </Button>
+              <Button onClick={handleCreateCollection} disabled={!newCollectionName.trim()}>
+                Create Collection
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      </div>
+    );
+  }
+
+  return (
+    <div className="h-full bg-vscode-sidebar flex flex-col">
+      {/* Header */}
+      <div className="px-4 py-2 border-b border-border">
+        <div className="flex items-center justify-between mb-2">
+          <h2 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+            GraphQL Collections
+          </h2>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="ghost" size="icon" className="h-5 w-5">
                 <MoreHorizontal size={14} />
               </Button>
             </DropdownMenuTrigger>
@@ -192,8 +328,8 @@ const Sidebar = ({ activeView }) => {
                 Export All Collections
               </DropdownMenuItem>
               <DropdownMenuSeparator />
-              <DropdownMenuItem>
-                <Plus size={14} className="mr-2" />
+              <DropdownMenuItem onClick={() => setIsNewCollectionDialogOpen(true)}>
+                <FolderPlus size={14} className="mr-2" />
                 New Collection
               </DropdownMenuItem>
             </DropdownMenuContent>
@@ -208,56 +344,56 @@ const Sidebar = ({ activeView }) => {
             placeholder="Search requests..."
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            className="h-7 pl-7 text-xs bg-background/50"
+            className="h-6 pl-7 text-xs bg-input/50 border-border"
           />
         </div>
       </div>
 
       {/* Tree View */}
       <ScrollArea className="flex-1">
-        <div className="p-2">
+        <div className="py-1">
           {filteredCollections.map(collection => (
-            <div key={collection.id} className="mb-1">
+            <div key={collection.id} className="mb-0.5">
               {/* Collection Header */}
               <button
                 onClick={() => toggleCollection(collection.id)}
-                className="w-full flex items-center gap-1 px-2 py-1.5 rounded hover:bg-muted/50 text-sm font-medium transition-colors"
+                className="w-full flex items-center gap-1 px-2 py-1 hover:bg-muted/50 text-[13px] transition-colors group"
               >
                 {expandedCollections.includes(collection.id) 
-                  ? <ChevronDown size={14} className="text-muted-foreground" />
-                  : <ChevronRight size={14} className="text-muted-foreground" />
+                  ? <ChevronDown size={16} className="text-muted-foreground shrink-0" />
+                  : <ChevronRight size={16} className="text-muted-foreground shrink-0" />
                 }
-                <span className="text-primary">●</span>
-                <span className="truncate">{collection.name}</span>
+                <span className="text-syntax-variable shrink-0">●</span>
+                <span className="truncate font-medium">{collection.name}</span>
               </button>
 
               {/* Folders */}
               {expandedCollections.includes(collection.id) && (
-                <div className="ml-3 border-l border-border/50 pl-2">
+                <div className="ml-4">
                   {collection.folders.map(folder => (
-                    <div key={folder.id} className="mb-0.5">
+                    <div key={folder.id}>
                       {/* Folder Header */}
                       <div className="flex items-center group">
                         <button
                           onClick={() => toggleFolder(folder.id)}
-                          className="flex-1 flex items-center gap-1 px-2 py-1 rounded hover:bg-muted/50 text-sm transition-colors"
+                          className="flex-1 flex items-center gap-1 px-2 py-0.5 hover:bg-muted/50 text-[13px] transition-colors"
                         >
                           {expandedFolders.includes(folder.id) 
                             ? <>
-                                <ChevronDown size={12} className="text-muted-foreground" />
-                                <FolderOpen size={14} className="text-warning" />
+                                <ChevronDown size={16} className="text-muted-foreground shrink-0" />
+                                <FolderOpen size={14} className="text-warning shrink-0" />
                               </>
                             : <>
-                                <ChevronRight size={12} className="text-muted-foreground" />
-                                <Folder size={14} className="text-warning" />
+                                <ChevronRight size={16} className="text-muted-foreground shrink-0" />
+                                <Folder size={14} className="text-warning shrink-0" />
                               </>
                           }
-                          <span className="truncate ml-1">{folder.name}</span>
+                          <span className="truncate ml-0.5">{folder.name}</span>
                         </button>
                         <Button
                           variant="ghost"
                           size="icon"
-                          className="h-5 w-5 opacity-0 group-hover:opacity-100 transition-opacity"
+                          className="h-5 w-5 opacity-0 group-hover:opacity-100 transition-opacity mr-1"
                           onClick={() => {
                             setSelectedFolder(folder);
                             setIsNewRequestDialogOpen(true);
@@ -269,12 +405,12 @@ const Sidebar = ({ activeView }) => {
 
                       {/* Requests */}
                       {expandedFolders.includes(folder.id) && (
-                        <div className="ml-4">
+                        <div className="ml-5">
                           {folder.requests.map(request => (
                             <button
                               key={request.id}
                               onClick={() => openRequest(request)}
-                              className={`w-full flex items-center gap-2 px-2 py-1 rounded text-sm transition-colors group
+                              className={`w-full flex items-center gap-2 px-2 py-0.5 text-[13px] transition-colors group
                                 ${activeRequest?.id === request.id 
                                   ? 'bg-primary/15 text-foreground' 
                                   : 'hover:bg-muted/50 text-muted-foreground hover:text-foreground'
@@ -311,10 +447,20 @@ const Sidebar = ({ activeView }) => {
                               </DropdownMenu>
                             </button>
                           ))}
+                          {folder.requests.length === 0 && (
+                            <div className="px-2 py-1 text-xs text-muted-foreground italic">
+                              No requests
+                            </div>
+                          )}
                         </div>
                       )}
                     </div>
                   ))}
+                  {collection.folders.length === 0 && (
+                    <div className="px-2 py-1 ml-4 text-xs text-muted-foreground italic">
+                      No folders
+                    </div>
+                  )}
                 </div>
               )}
             </div>
@@ -323,19 +469,25 @@ const Sidebar = ({ activeView }) => {
       </ScrollArea>
 
       {/* Bottom Actions */}
-      <div className="p-3 border-t border-border flex gap-2">
+      <div className="p-2 border-t border-border flex gap-2">
         <Button 
-          onClick={() => setIsNewRequestDialogOpen(true)} 
-          className="flex-1 h-8 text-xs"
+          onClick={() => {
+            if (allFolders.length > 0) {
+              setIsNewRequestDialogOpen(true);
+            } else {
+              toast.error('Create a collection with a folder first');
+            }
+          }} 
+          className="flex-1 h-7 text-xs"
           size="sm"
         >
           <Plus size={14} className="mr-1" />
           New Request
         </Button>
-        <Button variant="outline" size="icon" className="h-8 w-8" onClick={handleImport}>
+        <Button variant="outline" size="icon" className="h-7 w-7" onClick={handleImport}>
           <Upload size={14} />
         </Button>
-        <Button variant="outline" size="icon" className="h-8 w-8" onClick={handleExport}>
+        <Button variant="outline" size="icon" className="h-7 w-7" onClick={handleExport}>
           <Download size={14} />
         </Button>
       </div>
@@ -362,7 +514,7 @@ const Sidebar = ({ activeView }) => {
               <div className="space-y-2">
                 <label className="text-sm font-medium">Select Folder</label>
                 <div className="space-y-1 max-h-40 overflow-auto border rounded-md p-2">
-                  {collections.flatMap(col => col.folders).map(folder => (
+                  {allFolders.map(folder => (
                     <button
                       key={folder.id}
                       onClick={() => setSelectedFolder(folder)}
@@ -383,11 +535,53 @@ const Sidebar = ({ activeView }) => {
             )}
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setIsNewRequestDialogOpen(false)}>
+            <Button variant="outline" onClick={() => {
+              setIsNewRequestDialogOpen(false);
+              setSelectedFolder(null);
+            }}>
               Cancel
             </Button>
             <Button onClick={handleCreateRequest} disabled={!newRequestName.trim() || !selectedFolder}>
               Create Request
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* New Collection Dialog */}
+      <Dialog open={isNewCollectionDialogOpen} onOpenChange={setIsNewCollectionDialogOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Create Collection</DialogTitle>
+            <DialogDescription>
+              Create a new collection to organize your GraphQL requests.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-4">
+            <div className="space-y-2">
+              <label className="text-sm font-medium">Collection Name</label>
+              <Input
+                placeholder="e.g., My API"
+                value={newCollectionName}
+                onChange={(e) => setNewCollectionName(e.target.value)}
+                autoFocus
+              />
+            </div>
+            <div className="space-y-2">
+              <label className="text-sm font-medium">First Folder (optional)</label>
+              <Input
+                placeholder="e.g., User Queries"
+                value={newFolderName}
+                onChange={(e) => setNewFolderName(e.target.value)}
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setIsNewCollectionDialogOpen(false)}>
+              Cancel
+            </Button>
+            <Button onClick={handleCreateCollection} disabled={!newCollectionName.trim()}>
+              Create Collection
             </Button>
           </DialogFooter>
         </DialogContent>

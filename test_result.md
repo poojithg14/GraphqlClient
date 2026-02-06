@@ -101,3 +101,158 @@
 #====================================================================================================
 # Testing Data - Main Agent and testing sub agent both should log testing data below this section
 #====================================================================================================
+
+user_problem_statement: "Test the GraphQL Collections & Runner VS Code Extension prototype at https://graphql-client.preview.emergentagent.com"
+
+frontend:
+  - task: "Empty state display"
+    implemented: true
+    working: true
+    file: "/app/frontend/src/components/Sidebar.jsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: "Empty state displays correctly with 'No Collections' message and description text. VS Code-like layout is properly rendered."
+
+  - task: "New Collection button functionality"
+    implemented: true
+    working: true
+    file: "/app/frontend/src/components/Sidebar.jsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: "New Collection button is visible and clickable. Opens collection creation dialog successfully."
+
+  - task: "Collection creation form"
+    implemented: true
+    working: true
+    file: "/app/frontend/src/components/Sidebar.jsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: "Collection creation form works correctly. Can fill collection name and folder name. Create Collection button functions properly."
+
+  - task: "Collection appears in sidebar"
+    implemented: true
+    working: true
+    file: "/app/frontend/src/components/Sidebar.jsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: "Created collections appear correctly in sidebar tree view. Both collection and folder are visible with proper hierarchy."
+
+  - task: "VS Code-like UI layout"
+    implemented: true
+    working: true
+    file: "/app/frontend/src/components/VSCodeLayout.jsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: "VS Code layout is properly implemented with activity bar, sidebar, editor panel, and status bar. Title bar with macOS-style controls is present."
+
+  - task: "Collection tree view with expand/collapse"
+    implemented: true
+    working: true
+    file: "/app/frontend/src/components/Sidebar.jsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: "Collection tree view displays properly with expand/collapse functionality. Chevron icons are present for navigation."
+
+  - task: "Request creation via plus button"
+    implemented: true
+    working: false
+    file: "/app/frontend/src/components/Sidebar.jsx"
+    stuck_count: 1
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: false
+        agent: "testing"
+        comment: "Plus button appears on hover over folders, but modal overlay interference prevents proper interaction. Request creation dialog opens but folder selection has click interception issues."
+
+  - task: "Request editor with tabs"
+    implemented: true
+    working: "NA"
+    file: "/app/frontend/src/components/EditorPanel.jsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "testing"
+        comment: "Request editor tabs (Query, Variables, Headers) are implemented and visible, but could not fully test functionality due to request creation issues. Tab structure appears correct."
+
+  - task: "Run Query button functionality"
+    implemented: true
+    working: "NA"
+    file: "/app/frontend/src/components/EditorPanel.jsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "testing"
+        comment: "Run Query button is implemented and visible in the editor toolbar, but could not fully test due to request creation workflow issues. Mock response generation is implemented in code."
+
+  - task: "Environment switcher dropdown"
+    implemented: true
+    working: true
+    file: "/app/frontend/src/components/StatusBar.jsx"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: "Environment switcher is functional in status bar. Can see Development, Staging, Production options. Dropdown opens and environment switching appears to work."
+
+  - task: "Theme toggle functionality"
+    implemented: true
+    working: "NA"
+    file: "/app/frontend/src/components/ActivityBar.jsx"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "testing"
+        comment: "Theme toggle button (sun/moon icon) is present in activity bar, but could not clearly verify theme switching functionality. HTML class changes may occur but visual effect unclear."
+
+metadata:
+  created_by: "testing_agent"
+  version: "1.0"
+  test_sequence: 1
+  run_ui: true
+
+test_plan:
+  current_focus:
+    - "Request creation via plus button"
+    - "Request editor with tabs"
+    - "Run Query button functionality"
+  stuck_tasks:
+    - "Request creation via plus button"
+  test_all: true
+  test_priority: "high_first"
+
+agent_communication:
+  - agent: "testing"
+    message: "Completed comprehensive testing of GraphQL Collections & Runner VS Code Extension prototype. Core collection management functionality works well. Main issue is modal overlay interference preventing smooth request creation workflow. The VS Code-like UI is well implemented with proper layout components. Environment switcher is functional. Theme toggle and request editor need further verification once request creation issues are resolved."

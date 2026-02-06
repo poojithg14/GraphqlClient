@@ -268,13 +268,27 @@ const EditorPanel = () => {
   if (!activeRequest && openTabs.length === 0) {
     return (
       <div className="h-full bg-vscode-editor flex items-center justify-center">
-        <div className="text-center space-y-4 animate-fade-in">
-          <FileCode size={64} className="mx-auto text-muted-foreground/30" />
+        <div className="text-center space-y-4 animate-fade-in max-w-md">
+          <div className="w-24 h-24 mx-auto rounded-2xl bg-muted/30 flex items-center justify-center">
+            <FileCode size={48} className="text-muted-foreground/40" />
+          </div>
           <div>
-            <h3 className="text-lg font-medium text-foreground">No request selected</h3>
-            <p className="text-sm text-muted-foreground mt-1">
-              Select a request from the collections panel or create a new one
+            <h3 className="text-base font-medium text-foreground mb-2">Welcome to GraphQL Runner</h3>
+            <p className="text-sm text-muted-foreground leading-relaxed">
+              Create a collection and add GraphQL requests to get started.
+              <br />
+              You can also import existing collections from JSON files.
             </p>
+          </div>
+          <div className="flex justify-center gap-3 pt-2">
+            <a 
+              href="https://graphql.org/learn/" 
+              target="_blank" 
+              rel="noopener noreferrer"
+              className="text-xs text-primary hover:underline"
+            >
+              Learn GraphQL →
+            </a>
           </div>
         </div>
       </div>

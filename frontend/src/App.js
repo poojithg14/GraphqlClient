@@ -13,141 +13,8 @@ const GraphQLContext = createContext();
 
 export const useGraphQL = () => useContext(GraphQLContext);
 
-// Initial mock data
-const initialCollections = [
-  {
-    id: 'col-1',
-    name: 'My API Collection',
-    folders: [
-      {
-        id: 'folder-1',
-        name: 'User Queries',
-        requests: [
-          {
-            id: 'req-1',
-            name: 'Get User',
-            type: 'query',
-            query: `query GetUser($id: ID!) {
-  user(id: $id) {
-    id
-    name
-    email
-    age
-    createdAt
-  }
-}`,
-            variables: '{\n  "id": "1"\n}',
-            headers: {}
-          },
-          {
-            id: 'req-2',
-            name: 'User Details',
-            type: 'query',
-            query: `query UserDetails($id: ID!) {
-  user(id: $id) {
-    id
-    name
-    email
-    age
-    orders {
-      id
-      total
-      status
-    }
-  }
-}`,
-            variables: '{\n  "id": "1"\n}',
-            headers: {}
-          },
-          {
-            id: 'req-3',
-            name: 'List Users',
-            type: 'query',
-            query: `query ListUsers($limit: Int, $offset: Int) {
-  users(limit: $limit, offset: $offset) {
-    id
-    name
-    email
-    age
-  }
-}`,
-            variables: '{\n  "limit": 10,\n  "offset": 0\n}',
-            headers: {}
-          }
-        ]
-      },
-      {
-        id: 'folder-2',
-        name: 'Order Mutations',
-        requests: [
-          {
-            id: 'req-4',
-            name: 'Create Order',
-            type: 'mutation',
-            query: `mutation CreateOrder($input: OrderInput!) {
-  createOrder(input: $input) {
-    id
-    userId
-    items {
-      productId
-      quantity
-      price
-    }
-    total
-    status
-    createdAt
-  }
-}`,
-            variables: '{\n  "input": {\n    "userId": "1",\n    "items": [\n      {\n        "productId": "prod-1",\n        "quantity": 2,\n        "price": 29.99\n      }\n    ]\n  }\n}',
-            headers: {}
-          },
-          {
-            id: 'req-5',
-            name: 'Update Order',
-            type: 'mutation',
-            query: `mutation UpdateOrder($id: ID!, $status: OrderStatus!) {
-  updateOrder(id: $id, status: $status) {
-    id
-    status
-    updatedAt
-  }
-}`,
-            variables: '{\n  "id": "order-1",\n  "status": "SHIPPED"\n}',
-            headers: {}
-          }
-        ]
-      }
-    ]
-  },
-  {
-    id: 'col-2',
-    name: 'Shared with Team',
-    folders: [
-      {
-        id: 'folder-3',
-        name: 'Product Queries',
-        requests: [
-          {
-            id: 'req-6',
-            name: 'Get Products',
-            type: 'query',
-            query: `query GetProducts($category: String) {
-  products(category: $category) {
-    id
-    name
-    price
-    category
-    inStock
-  }
-}`,
-            variables: '{\n  "category": "Electronics"\n}',
-            headers: {}
-          }
-        ]
-      }
-    ]
-  }
-];
+// Empty initial state - no demo data
+const initialCollections = [];
 
 const initialEnvironments = {
   active: 'dev',
@@ -180,11 +47,8 @@ const initialEnvironments = {
   }
 };
 
-const initialSecrets = {
-  DEV_TOKEN: 'dev-secret-token-12345',
-  STAGING_TOKEN: 'staging-secret-token-67890',
-  PROD_TOKEN: 'prod-secret-token-abcdef'
-};
+// Empty secrets - user must add their own
+const initialSecrets = {};
 
 function App() {
   const [theme, setTheme] = useState('dark');

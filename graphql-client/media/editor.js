@@ -1,0 +1,1182 @@
+// @ts-nocheck
+(function () {
+  'use strict';
+
+  const vscode = acquireVsCodeApi();
+
+  let state = vscode.getState() || {
+    openTabs: [],
+    activeTabId: null,
+    environments: { active: 'dev', envs: {} },
+    history: [],
+    secretKeys: [],
+  };
+
+  let tabStates = {};
+  let isLoading = false;
+  let contextMenu = null;
+
+  function saveState() { vscode.setState(state); }
+  function $(sel) { return document.querySelector(sel); }
+
+  function el(tag, attrs, children) {
+    const e = document.createElement(tag);
+    if (attrs) {
+      for (const [k, v] of Object.entries(attrs)) {
+        if (v === undefined || v === null) continue;
+        if (k === 'className') e.className = v;
+        else if (k === 'textContent') e.textContent = v;
+        else if (k === 'innerHTML') e.innerHTML = v;
+        else if (k.startsWith('on')) e.addEventListener(k.slice(2).toLowerCase(), v);
+        else if (k === 'style' && typeof v === 'object') Object.assign(e.style, v);
+        else e.setAttribute(k, v);
+      }
+    }
+    if (children) {
+      if (typeof children === 'string') e.textContent = children;
+      else if (Array.isArray(children)) children.forEach(c => { if (c) e.appendChild(c); });
+      else e.appendChild(children);
+    }
+    return e;
+  }
+
+  // ── Messages from extension host ──
+  window.addEventListener('message', e => {
+    const msg = e.data;
+    switch (msg.type) {
+      case 'openRequest':
+        handleOpenRequest(msg.payload);
+        break;
+      case 'environmentsLoaded':
+        state.environments = msg.payload;
+        saveState();
+        renderStatusBar();
+        renderEditor();
+        break;
+      case 'historyLoaded':
+        state.history = msg.payload;
+        saveState();
+        break;
+      case 'secretsList':
+        state.secretKeys = msg.payload;
+        saveState();
+        break;
+      case 'queryResult':
+        isLoading = false;
+        handleQueryResult(msg.payload);
+        break;
+      case 'queryError':
+        isLoading = false;
+        handleQueryError(msg.payload);
+        break;
+      case 'saveConfirmed':
+        showSaveToast();
+        if (state.activeTabId && tabStates[state.activeTabId]) {
+          const ts = tabStates[state.activeTabId];
+          ts.initialQuery = ts.query;
+          ts.initialVariables = ts.variables;
+          ts.initialHeaders = ts.headers;
+          syncDirtyState();
+          renderTabs();
+        }
+        break;
+      case 'promptSaveToCollection':
+        showSaveToCollectionDialog(msg.payload);
+        break;
+      case 'collectionsLoaded':
+        // Used by save-to-collection dialog refresh
+        break;
+    }
+  });
+
+  // ── Init ──
+  function init() {
+    const app = $('#app');
+    app.innerHTML = '';
+    app.appendChild(el('div', { className: 'tabs-bar', id: 'tabs-bar' }));
+    app.appendChild(el('div', { id: 'editor-content', style: { flex: '1', display: 'flex', flexDirection: 'column', overflow: 'hidden' } }));
+    app.appendChild(el('div', { className: 'status-bar', id: 'status-bar' }));
+
+    vscode.postMessage({ type: 'loadEnvironments' });
+    vscode.postMessage({ type: 'loadHistory' });
+    vscode.postMessage({ type: 'listSecrets' });
+
+    renderTabs();
+    renderEditor();
+    renderStatusBar();
+  }
+
+  // ── Open Request (from sidebar) ──
+  function handleOpenRequest(req) {
+    if (!state.openTabs.find(t => t.id === req.id)) {
+      state.openTabs.push({ id: req.id, name: req.name, type: req.type });
+    }
+    state.activeTabId = req.id;
+
+    if (!tabStates[req.id]) {
+      // Build initial argValues from variables JSON
+      const argValues = {};
+      const operationArgs = req.operationArgs || [];
+      try {
+        const parsed = JSON.parse(req.variables || '{}');
+        for (const arg of operationArgs) {
+          argValues[arg.name] = parsed[arg.name] !== undefined ? String(parsed[arg.name]) : '';
+        }
+      } catch {}
+
+      const initialQuery = req.query || '';
+      const initialVariables = req.variables || '{}';
+      const initialHeaders = JSON.stringify(req.headers || {}, null, 2);
+
+      tabStates[req.id] = {
+        request: req,
+        query: initialQuery,
+        variables: initialVariables,
+        headers: initialHeaders,
+        initialQuery: initialQuery,
+        initialVariables: initialVariables,
+        initialHeaders: initialHeaders,
+        response: null,
+        responseTime: null,
+        activeSubTab: 'query',
+        responseSubTab: 'response',
+        returnTypeName: req.returnTypeName || null,
+        availableFields: req.availableFields || [],
+        selectedFields: [],
+        operationArgs: operationArgs,
+        argValues: argValues,
+        bottomPanelExpanded: true,
+      };
+    }
+
+    saveState();
+    renderTabs();
+    renderEditor();
+  }
+
+  // ── Tabs ──
+  function renderTabs() {
+    const tabsBar = $('#tabs-bar');
+    if (!tabsBar) return;
+    tabsBar.innerHTML = '';
+
+    state.openTabs.forEach(tab => {
+      const isActive = tab.id === state.activeTabId;
+      const tabEl = el('div', {
+        className: 'tab' + (isActive ? ' active' : ''),
+        onClick: () => {
+          state.activeTabId = tab.id;
+          saveState();
+          renderTabs();
+          renderEditor();
+        },
+      });
+      tabEl.appendChild(el('span', { className: 'tree-badge ' + tab.type, textContent: tab.type.charAt(0).toUpperCase() }));
+      const ts = tabStates[tab.id];
+      const dirty = ts && isTabDirty(ts);
+      tabEl.appendChild(el('span', { textContent: tab.name }));
+      if (dirty) tabEl.appendChild(el('span', { className: 'tab-dirty-dot', textContent: '\u25CF' }));
+      tabEl.appendChild(el('button', {
+        className: 'btn-icon close-btn', innerHTML: '&times;',
+        onClick: e => { e.stopPropagation(); closeTab(tab.id); },
+      }));
+      tabsBar.appendChild(tabEl);
+    });
+  }
+
+  function isTabDirty(ts) {
+    return ts.query !== ts.initialQuery ||
+      ts.variables !== ts.initialVariables ||
+      ts.headers !== ts.initialHeaders;
+  }
+
+  function closeTab(tabId) {
+    const ts = tabStates[tabId];
+    if (ts && isTabDirty(ts)) {
+      showCloseTabDialog(tabId, ts);
+    } else {
+      doCloseTab(tabId);
+    }
+  }
+
+  function doCloseTab(tabId) {
+    state.openTabs = state.openTabs.filter(t => t.id !== tabId);
+    delete tabStates[tabId];
+    if (state.activeTabId === tabId) {
+      if (state.openTabs.length > 0) {
+        state.activeTabId = state.openTabs[state.openTabs.length - 1].id;
+      } else {
+        state.activeTabId = null;
+      }
+    }
+    saveState();
+    syncDirtyState();
+    renderTabs();
+    renderEditor();
+  }
+
+  function showCloseTabDialog(tabId, ts) {
+    const tabInfo = state.openTabs.find(t => t.id === tabId);
+    const name = tabInfo ? tabInfo.name : 'this request';
+
+    const overlay = el('div', { className: 'modal-overlay' });
+    const modal = el('div', { className: 'modal' });
+    modal.appendChild(el('div', { className: 'modal-title', textContent: 'Unsaved Changes' }));
+    modal.appendChild(el('div', { className: 'modal-desc', textContent: 'Save changes to "' + name + '"?' }));
+
+    const actions = el('div', { className: 'close-dialog-actions' });
+    actions.appendChild(el('button', {
+      className: 'btn btn-primary', textContent: 'Save',
+      onClick: () => {
+        overlay.remove();
+        saveTabRequest(tabId);
+        doCloseTab(tabId);
+      },
+    }));
+    actions.appendChild(el('button', {
+      className: 'btn btn-secondary', textContent: "Don't Save",
+      onClick: () => { overlay.remove(); doCloseTab(tabId); },
+    }));
+    actions.appendChild(el('button', {
+      className: 'btn btn-secondary', textContent: 'Cancel',
+      onClick: () => overlay.remove(),
+    }));
+    modal.appendChild(actions);
+    overlay.appendChild(modal);
+    overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
+    document.body.appendChild(overlay);
+  }
+
+  function saveTabRequest(tabId) {
+    const ts = tabStates[tabId];
+    if (!ts) return;
+
+    let parsedHeaders = {};
+    try { parsedHeaders = JSON.parse(ts.headers || '{}'); } catch {}
+
+    vscode.postMessage({
+      type: 'saveRequest',
+      payload: {
+        requestId: tabId,
+        updates: { query: ts.query, variables: ts.variables, headers: parsedHeaders },
+      },
+    });
+  }
+
+  function syncDirtyState() {
+    const dirtyTabs = [];
+    for (const tab of state.openTabs) {
+      const ts = tabStates[tab.id];
+      if (ts && isTabDirty(ts)) {
+        let parsedHeaders = {};
+        try { parsedHeaders = JSON.parse(ts.headers || '{}'); } catch {}
+        dirtyTabs.push({
+          id: tab.id,
+          name: tab.name,
+          type: tab.type,
+          query: ts.query,
+          variables: ts.variables,
+          headers: parsedHeaders,
+        });
+      }
+    }
+    vscode.postMessage({ type: 'dirtyState', payload: dirtyTabs });
+  }
+
+  // ── Editor ──
+  function renderEditor() {
+    const content = $('#editor-content');
+    if (!content) return;
+    content.innerHTML = '';
+
+    if (!state.activeTabId) {
+      content.appendChild(el('div', { className: 'welcome' }, [
+        el('div', { className: 'welcome-icon', textContent: '{ }' }),
+        el('div', { className: 'welcome-text', textContent: 'GraphQL Client' }),
+        el('div', { className: 'welcome-hint', textContent: 'Select a request from the sidebar to get started' }),
+      ]));
+      return;
+    }
+
+    const ts = tabStates[state.activeTabId];
+    if (!ts) return;
+
+    // Normalize sub-tab (removed variables/fields tabs)
+    if (ts.activeSubTab !== 'query' && ts.activeSubTab !== 'headers') {
+      ts.activeSubTab = 'query';
+    }
+
+    // Query validation
+    const queryError = validateQuery(ts.query);
+    const canRun = !queryError && !isLoading;
+
+    // Endpoint bar
+    const env = state.environments.envs[state.environments.active];
+    const endpoint = env ? env.endpoint : '';
+
+    const endpointBar = el('div', { className: 'endpoint-bar' });
+    const opType = detectOperationType(ts.query);
+    const opClass = opType.toLowerCase() === 'mutation' ? 'op-mutation' : opType.toLowerCase() === 'subscription' ? 'op-subscription' : 'op-query';
+    endpointBar.appendChild(el('span', {
+      className: 'op-badge ' + opClass,
+      textContent: opType,
+    }));
+    endpointBar.appendChild(el('input', {
+      className: 'input', type: 'text', value: endpoint, placeholder: 'Enter GraphQL endpoint URL (e.g. http://localhost:4000/graphql)',
+      onInput: e => {
+        if (state.environments.envs[state.environments.active]) {
+          state.environments.envs[state.environments.active].endpoint = e.target.value;
+          saveState();
+        }
+      },
+    }));
+    endpointBar.appendChild(el('button', {
+      className: 'btn btn-run',
+      textContent: isLoading ? 'Running...' : '▶ Run',
+      disabled: (!canRun) ? 'disabled' : undefined,
+      onClick: () => executeQuery(),
+    }));
+    endpointBar.appendChild(el('button', {
+      className: 'btn btn-secondary', textContent: 'Save',
+      onClick: () => saveCurrentRequest(),
+    }));
+    content.appendChild(endpointBar);
+
+    // Query error bar
+    if (queryError) {
+      content.appendChild(el('div', { className: 'query-error-bar', textContent: queryError }));
+    }
+
+    // Editor split
+    const split = el('div', { className: 'editor-split' });
+
+    // Left panel (query/headers only)
+    const leftPanel = el('div', { className: 'editor-panel' });
+    const leftSubTabs = el('div', { className: 'sub-tabs' });
+    ['query', 'headers'].forEach(tab => {
+      leftSubTabs.appendChild(el('button', {
+        className: 'sub-tab' + (ts.activeSubTab === tab ? ' active' : ''),
+        textContent: tab.charAt(0).toUpperCase() + tab.slice(1),
+        onClick: () => { ts.activeSubTab = tab; renderEditor(); },
+      }));
+    });
+    leftPanel.appendChild(leftSubTabs);
+
+    const leftContent = el('div', { className: 'panel-content', style: { display: 'flex', flexDirection: 'column' } });
+    if (ts.activeSubTab === 'query') {
+      leftContent.appendChild(buildCodeEditor(ts.query, 'graphql', val => {
+        ts.query = val;
+        syncDirtyState();
+        renderTabs();
+        // Live-update error bar + run button without full re-render
+        const existingErr = content.querySelector('.query-error-bar');
+        const newErr = validateQuery(val);
+        if (newErr && !existingErr) {
+          const errBar = el('div', { className: 'query-error-bar', textContent: newErr });
+          content.insertBefore(errBar, split);
+        } else if (newErr && existingErr) {
+          existingErr.textContent = newErr;
+        } else if (!newErr && existingErr) {
+          existingErr.remove();
+        }
+        const runBtn = endpointBar.querySelector('.btn-run');
+        if (runBtn) runBtn.disabled = !!newErr || isLoading;
+      }));
+      // Bottom panel with fields + args
+      const bottomPanel = buildQueryBottomPanel(ts);
+      if (bottomPanel) leftContent.appendChild(bottomPanel);
+    } else {
+      leftContent.appendChild(buildCodeEditor(ts.headers, 'json', val => { ts.headers = val; syncDirtyState(); renderTabs(); }));
+    }
+    leftPanel.appendChild(leftContent);
+
+    // Right panel (response/history)
+    const rightPanel = el('div', { className: 'editor-panel' });
+    const rightSubTabs = el('div', { className: 'sub-tabs' });
+    ['response', 'history'].forEach(tab => {
+      rightSubTabs.appendChild(el('button', {
+        className: 'sub-tab' + (ts.responseSubTab === tab ? ' active' : ''),
+        textContent: tab.charAt(0).toUpperCase() + tab.slice(1) + (tab === 'response' && ts.responseTime != null ? ' (' + ts.responseTime + 'ms)' : ''),
+        onClick: () => { ts.responseSubTab = tab; renderEditor(); },
+      }));
+    });
+    rightPanel.appendChild(rightSubTabs);
+
+    const rightContent = el('div', { className: 'panel-content' });
+    if (ts.responseSubTab === 'response') {
+      rightContent.appendChild(buildResponseViewer(ts.response));
+    } else {
+      rightContent.appendChild(buildHistoryViewer());
+    }
+    rightPanel.appendChild(rightContent);
+
+    split.appendChild(leftPanel);
+    split.appendChild(rightPanel);
+    content.appendChild(split);
+  }
+
+  // ── Code Editor ──
+  function buildCodeEditor(value, language, onChange) {
+    const wrap = el('div', { className: 'code-editor-wrap' });
+    const container = el('div', { className: 'code-editor-container' });
+
+    const lines = value.split('\n');
+    const lineCount = Math.max(lines.length, 20);
+    const lineNums = el('div', { className: 'line-numbers' });
+    for (let i = 1; i <= lineCount; i++) lineNums.appendChild(el('div', { textContent: String(i) }));
+
+    const inner = el('div', { className: 'code-editor-inner' });
+    const highlight = el('div', { className: 'code-highlight' });
+    highlight.innerHTML = highlightCode(value, language);
+
+    const textarea = el('textarea', {
+      className: 'code-textarea', value: value,
+      spellcheck: 'false', autocomplete: 'off', autocorrect: 'off', autocapitalize: 'off',
+    });
+
+    textarea.addEventListener('input', () => {
+      const val = textarea.value;
+      onChange(val);
+      highlight.innerHTML = highlightCode(val, language);
+      updateLineNumbers(lineNums, val);
+    });
+
+    textarea.addEventListener('keydown', e => {
+      if (e.key === 'Tab') {
+        e.preventDefault();
+        const start = textarea.selectionStart;
+        const end = textarea.selectionEnd;
+        textarea.value = textarea.value.substring(0, start) + '  ' + textarea.value.substring(end);
+        textarea.selectionStart = textarea.selectionEnd = start + 2;
+        textarea.dispatchEvent(new Event('input'));
+      }
+    });
+
+    textarea.addEventListener('scroll', () => {
+      highlight.scrollTop = textarea.scrollTop;
+      highlight.scrollLeft = textarea.scrollLeft;
+      lineNums.scrollTop = textarea.scrollTop;
+    });
+
+    inner.appendChild(highlight);
+    inner.appendChild(textarea);
+    container.appendChild(lineNums);
+    container.appendChild(inner);
+    wrap.appendChild(container);
+    return wrap;
+  }
+
+  function updateLineNumbers(lineNums, value) {
+    const lines = value.split('\n');
+    const lineCount = Math.max(lines.length, 20);
+    lineNums.innerHTML = '';
+    for (let i = 1; i <= lineCount; i++) lineNums.appendChild(el('div', { textContent: String(i) }));
+  }
+
+  // ── Syntax Highlighting ──
+  function highlightCode(code, language) {
+    if (language === 'graphql') return highlightGraphQL(code);
+    if (language === 'json') return highlightJSON(code);
+    return escapeHtml(code);
+  }
+
+  function highlightGraphQL(code) {
+    return code.split('\n').map(line => {
+      line = line.replace(/(#.*)$/g, '<span class="syn-comment">$1</span>');
+      line = line.replace(/\b(query|mutation|subscription|fragment|on|type|interface|union|enum|scalar|input|extend|implements|directive|schema|true|false|null)\b/g, '<span class="syn-keyword">$1</span>');
+      line = line.replace(/\b(ID|String|Int|Float|Boolean)\b/g, '<span class="syn-type">$1</span>');
+      line = line.replace(/(\$\w+)/g, '<span class="syn-variable">$1</span>');
+      line = line.replace(/(@\w+)/g, '<span class="syn-directive">$1</span>');
+      line = line.replace(/("(?:[^"\\]|\\.)*")(?![^<]*>)/g, '<span class="syn-string">$1</span>');
+      line = line.replace(/\b(\d+(?:\.\d+)?)(?![^<]*>)\b/g, '<span class="syn-number">$1</span>');
+      return line;
+    }).join('\n');
+  }
+
+  function highlightJSON(code) {
+    return code.split('\n').map(line => {
+      line = line.replace(/("(?:[^"\\]|\\.)*")(\s*:)/g, '<span class="json-key">$1</span>$2');
+      line = line.replace(/(:\s*)("(?:[^"\\]|\\.)*")(?![^<]*>)/g, '$1<span class="json-string">$2</span>');
+      line = line.replace(/(:\s*)(\d+(?:\.\d+)?)(?![^<]*>)/g, '$1<span class="json-number">$2</span>');
+      line = line.replace(/(:\s*)(true|false|null)\b(?![^<]*>)/g, '$1<span class="json-boolean">$2</span>');
+      return line;
+    }).join('\n');
+  }
+
+  function escapeHtml(text) {
+    return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+
+  // ── Response Viewer ──
+  function buildResponseViewer(response) {
+    if (isLoading) {
+      return el('div', { className: 'loading-state' }, [
+        el('div', { className: 'spinner' }),
+        el('div', { textContent: 'Executing query...' }),
+      ]);
+    }
+    if (!response) {
+      return el('div', { className: 'empty-state' }, [
+        el('div', { textContent: '{ }', style: { fontSize: '32px', marginBottom: '4px' } }),
+        el('div', { textContent: 'Run a query to see results' }),
+      ]);
+    }
+
+    const wrapper = el('div', { style: { overflow: 'auto', height: '100%' } });
+    if (response.errors) {
+      const errBox = el('div', { className: 'response-errors' });
+      errBox.appendChild(el('div', { className: 'error-title', textContent: 'Errors' }));
+      response.errors.forEach(err => {
+        errBox.appendChild(el('div', { className: 'error-msg', textContent: err.message || String(err) }));
+        if (err.path) errBox.appendChild(el('div', { className: 'error-path', textContent: 'at ' + err.path.join('.') }));
+      });
+      wrapper.appendChild(errBox);
+    }
+    const content = el('div', { className: 'response-content' });
+    content.innerHTML = formatJSON(response, 0);
+    wrapper.appendChild(content);
+    return wrapper;
+  }
+
+  function formatJSON(obj, indent) {
+    const spaces = '  '.repeat(indent);
+    const nextSpaces = '  '.repeat(indent + 1);
+    if (obj === null) return '<span class="json-null">null</span>';
+    if (obj === undefined) return '<span class="json-null">undefined</span>';
+    if (typeof obj === 'boolean') return '<span class="json-boolean">' + obj + '</span>';
+    if (typeof obj === 'number') return '<span class="json-number">' + obj + '</span>';
+    if (typeof obj === 'string') return '<span class="json-string">"' + escapeHtml(obj) + '"</span>';
+    if (Array.isArray(obj)) {
+      if (obj.length === 0) return '[]';
+      let r = '[\n';
+      obj.forEach((item, i) => {
+        r += nextSpaces + formatJSON(item, indent + 1);
+        if (i < obj.length - 1) r += ',';
+        r += '\n';
+      });
+      return r + spaces + ']';
+    }
+    if (typeof obj === 'object') {
+      const keys = Object.keys(obj);
+      if (keys.length === 0) return '{}';
+      let r = '{\n';
+      keys.forEach((key, i) => {
+        r += nextSpaces + '<span class="json-key">"' + escapeHtml(key) + '"</span>: ' + formatJSON(obj[key], indent + 1);
+        if (i < keys.length - 1) r += ',';
+        r += '\n';
+      });
+      return r + spaces + '}';
+    }
+    return escapeHtml(String(obj));
+  }
+
+  // ── History Viewer ──
+  function buildHistoryViewer() {
+    if (!state.history || state.history.length === 0) {
+      return el('div', { className: 'empty-state' }, [
+        el('div', { textContent: 'No history yet' }),
+        el('div', { textContent: 'Execute a query to see it here', style: { fontSize: '11px' } }),
+      ]);
+    }
+    const list = el('div', { className: 'history-list' });
+    state.history.forEach(entry => {
+      const item = el('div', { className: 'history-item', onClick: () => loadHistoryEntry(entry) });
+      const nameRow = el('div', { style: { display: 'flex', alignItems: 'center', gap: '6px' } });
+      nameRow.appendChild(el('span', { className: 'history-name', textContent: entry.requestName }));
+      nameRow.appendChild(el('span', {
+        className: 'history-status ' + (entry.success ? 'success' : 'error'),
+        textContent: entry.success ? 'OK' : 'ERR',
+      }));
+      item.appendChild(nameRow);
+      const meta = el('div', { className: 'history-meta' });
+      meta.appendChild(el('span', { textContent: entry.responseTime + 'ms' }));
+      meta.appendChild(el('span', { textContent: entry.environment }));
+      meta.appendChild(el('span', { textContent: formatTimestamp(entry.timestamp) }));
+      item.appendChild(meta);
+      list.appendChild(item);
+    });
+    return list;
+  }
+
+  function loadHistoryEntry(entry) {
+    if (!state.activeTabId) return;
+    const ts = tabStates[state.activeTabId];
+    if (!ts) return;
+    ts.query = entry.query;
+    ts.variables = JSON.stringify(entry.variables || {}, null, 2);
+    ts.response = entry.response;
+    ts.responseTime = entry.responseTime;
+    renderEditor();
+  }
+
+  function formatTimestamp(isoString) {
+    try { return new Date(isoString).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }); }
+    catch { return isoString; }
+  }
+
+  // ── Query Execution ──
+  function executeQuery() {
+    if (!state.activeTabId) return;
+    const ts = tabStates[state.activeTabId];
+    if (!ts) return;
+
+    const env = state.environments.envs[state.environments.active];
+    const endpoint = env ? env.endpoint : '';
+
+    if (!endpoint) {
+      handleQueryError({ error: 'No endpoint configured. Set an endpoint URL first.', responseTime: 0 });
+      isLoading = false;
+      return;
+    }
+
+    let envHeaders = {};
+    if (env && env.headers) envHeaders = { ...env.headers };
+    let customHeaders = {};
+    try { customHeaders = JSON.parse(ts.headers || '{}'); } catch {}
+
+    isLoading = true;
+    renderEditor();
+
+    vscode.postMessage({
+      type: 'executeQuery',
+      payload: {
+        query: ts.query,
+        variables: ts.variables,
+        headers: { ...envHeaders, ...customHeaders },
+        endpoint: endpoint,
+      },
+    });
+  }
+
+  function handleQueryResult(payload) {
+    if (!state.activeTabId) return;
+    const ts = tabStates[state.activeTabId];
+    if (!ts) return;
+
+    ts.response = payload.data;
+    ts.responseTime = payload.responseTime;
+    ts.responseSubTab = 'response';
+
+    const hasErrors = payload.data && typeof payload.data === 'object' && payload.data.errors;
+    const entry = {
+      id: Date.now(),
+      requestId: state.activeTabId,
+      requestName: ts.request ? ts.request.name : 'Unknown',
+      query: ts.query,
+      variables: safeParseJSON(ts.variables),
+      response: payload.data,
+      responseTime: payload.responseTime,
+      timestamp: new Date().toISOString(),
+      environment: state.environments.active,
+      success: !hasErrors,
+    };
+    state.history = [entry, ...state.history].slice(0, 50);
+    saveState();
+    vscode.postMessage({ type: 'saveHistory', payload: state.history });
+    renderEditor();
+  }
+
+  function handleQueryError(payload) {
+    if (!state.activeTabId) return;
+    const ts = tabStates[state.activeTabId];
+    if (!ts) return;
+
+    ts.response = { errors: [{ message: payload.error }] };
+    ts.responseTime = payload.responseTime;
+    ts.responseSubTab = 'response';
+
+    const entry = {
+      id: Date.now(),
+      requestId: state.activeTabId,
+      requestName: ts.request ? ts.request.name : 'Unknown',
+      query: ts.query,
+      variables: safeParseJSON(ts.variables),
+      response: { errors: [{ message: payload.error }] },
+      responseTime: payload.responseTime,
+      timestamp: new Date().toISOString(),
+      environment: state.environments.active,
+      success: false,
+    };
+    state.history = [entry, ...state.history].slice(0, 50);
+    saveState();
+    vscode.postMessage({ type: 'saveHistory', payload: state.history });
+    renderEditor();
+  }
+
+  function safeParseJSON(str) {
+    try { return JSON.parse(str || '{}'); } catch { return {}; }
+  }
+
+  // ── Save Request ──
+  function saveCurrentRequest() {
+    if (!state.activeTabId) return;
+    const ts = tabStates[state.activeTabId];
+    if (!ts) return;
+
+    let parsedHeaders = {};
+    try { parsedHeaders = JSON.parse(ts.headers || '{}'); } catch {}
+
+    vscode.postMessage({
+      type: 'saveRequest',
+      payload: {
+        requestId: state.activeTabId,
+        updates: { query: ts.query, variables: ts.variables, headers: parsedHeaders },
+      },
+    });
+  }
+
+  function showSaveToast() {
+    const existing = document.querySelector('.save-toast');
+    if (existing) existing.remove();
+    const toast = el('div', { className: 'save-toast', textContent: 'Request saved' });
+    document.body.appendChild(toast);
+    setTimeout(() => toast.remove(), 2000);
+  }
+
+  function showSaveToCollectionDialog(collections) {
+    if (!state.activeTabId) return;
+    const ts = tabStates[state.activeTabId];
+    if (!ts) return;
+
+    const overlay = el('div', { className: 'modal-overlay' });
+    const modal = el('div', { className: 'modal' });
+    modal.appendChild(el('div', { className: 'modal-title', textContent: 'Save to Collection' }));
+    modal.appendChild(el('div', { className: 'modal-desc', textContent: 'This request is not yet saved. Choose a collection and folder.' }));
+
+    // Request name
+    const nameField = el('div', { className: 'modal-field' });
+    nameField.appendChild(el('label', { textContent: 'Request Name' }));
+    const nameInput = el('input', {
+      className: 'input', type: 'text',
+      value: ts.request ? ts.request.name : 'Untitled Request',
+    });
+    nameField.appendChild(nameInput);
+    modal.appendChild(nameField);
+
+    // Collection dropdown
+    const colField = el('div', { className: 'modal-field' });
+    colField.appendChild(el('label', { textContent: 'Collection' }));
+    const colSelect = el('select', { className: 'select' });
+    collections.forEach(col => {
+      colSelect.appendChild(el('option', { value: col.id, textContent: col.name }));
+    });
+    colSelect.appendChild(el('option', { value: '__new__', textContent: '+ New Collection' }));
+    colField.appendChild(colSelect);
+    modal.appendChild(colField);
+
+    // New collection name (hidden by default)
+    const newColField = el('div', { className: 'modal-field hidden' });
+    newColField.appendChild(el('label', { textContent: 'Collection Name' }));
+    const newColInput = el('input', { className: 'input', type: 'text', placeholder: 'e.g. My API' });
+    newColField.appendChild(newColInput);
+    modal.appendChild(newColField);
+
+    // Folder dropdown
+    const folderField = el('div', { className: 'modal-field' });
+    folderField.appendChild(el('label', { textContent: 'Folder' }));
+    const folderSelect = el('select', { className: 'select' });
+    modal.appendChild(folderField);
+
+    // New folder name (hidden by default)
+    const newFolderField = el('div', { className: 'modal-field hidden' });
+    newFolderField.appendChild(el('label', { textContent: 'Folder Name' }));
+    const newFolderInput = el('input', { className: 'input', type: 'text', placeholder: 'e.g. Queries' });
+    newFolderField.appendChild(newFolderInput);
+    modal.appendChild(newFolderField);
+
+    function updateFolderOptions() {
+      folderSelect.innerHTML = '';
+      const selectedColId = colSelect.value;
+      if (selectedColId === '__new__') {
+        newColField.classList.remove('hidden');
+        // New collection needs a new folder
+        folderSelect.appendChild(el('option', { value: '__new__', textContent: '+ New Folder' }));
+        newFolderField.classList.remove('hidden');
+      } else {
+        newColField.classList.add('hidden');
+        const col = collections.find(c => c.id === selectedColId);
+        if (col) {
+          col.folders.forEach(f => {
+            folderSelect.appendChild(el('option', { value: f.id, textContent: f.name }));
+          });
+        }
+        folderSelect.appendChild(el('option', { value: '__new__', textContent: '+ New Folder' }));
+        newFolderField.classList.add('hidden');
+      }
+      folderField.appendChild(folderSelect);
+    }
+
+    colSelect.addEventListener('change', updateFolderOptions);
+    folderSelect.addEventListener('change', () => {
+      if (folderSelect.value === '__new__') {
+        newFolderField.classList.remove('hidden');
+      } else {
+        newFolderField.classList.add('hidden');
+      }
+    });
+
+    updateFolderOptions();
+
+    // Actions
+    const actions = el('div', { className: 'modal-actions' });
+    actions.appendChild(el('button', { className: 'btn btn-secondary', textContent: 'Cancel', onClick: () => overlay.remove() }));
+    actions.appendChild(el('button', {
+      className: 'btn btn-primary', textContent: 'Save',
+      onClick: () => {
+        const reqName = nameInput.value.trim();
+        if (!reqName) return;
+
+        const isNewCol = colSelect.value === '__new__';
+        const isNewFolder = folderSelect.value === '__new__';
+
+        if (isNewCol && !newColInput.value.trim()) return;
+        if (isNewFolder && !newFolderInput.value.trim()) return;
+
+        let parsedHeaders = {};
+        try { parsedHeaders = JSON.parse(ts.headers || '{}'); } catch {}
+
+        vscode.postMessage({
+          type: 'saveNewRequest',
+          payload: {
+            collectionId: isNewCol ? '' : colSelect.value,
+            folderId: isNewFolder ? '' : folderSelect.value,
+            newCollectionName: isNewCol ? newColInput.value.trim() : '',
+            newFolderName: isNewFolder ? newFolderInput.value.trim() : '',
+            request: {
+              id: state.activeTabId,
+              name: reqName,
+              type: ts.request ? ts.request.type : 'query',
+              query: ts.query,
+              variables: ts.variables,
+              headers: parsedHeaders,
+            },
+          },
+        });
+
+        overlay.remove();
+      },
+    }));
+    modal.appendChild(actions);
+    overlay.appendChild(modal);
+    overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
+    document.body.appendChild(overlay);
+    setTimeout(() => nameInput.focus(), 50);
+  }
+
+  // ── Status Bar ──
+  function renderStatusBar() {
+    const bar = $('#status-bar');
+    if (!bar) return;
+    bar.innerHTML = '';
+
+    const left = el('div', { className: 'status-left' });
+    const right = el('div', { className: 'status-right' });
+
+    const envKey = state.environments.active || 'dev';
+    const envItem = el('div', { className: 'status-item', onClick: () => showEnvironmentSelector() });
+    envItem.appendChild(el('span', { className: 'env-dot ' + envKey }));
+    const envConfig = state.environments.envs[envKey];
+    envItem.appendChild(el('span', { textContent: envConfig ? envConfig.name : envKey }));
+    left.appendChild(envItem);
+
+    right.appendChild(el('div', {
+      className: 'status-item', textContent: '🔑 Secrets',
+      onClick: () => showSetSecretDialog(),
+    }));
+
+    bar.appendChild(left);
+    bar.appendChild(right);
+  }
+
+  // ── Environment Selector ──
+  function showEnvironmentSelector() {
+    closeContextMenu();
+    const envKeys = Object.keys(state.environments.envs);
+    if (envKeys.length === 0) return;
+    const menu = el('div', { className: 'context-menu' });
+    menu.style.left = '10px';
+    menu.style.bottom = '26px';
+    menu.style.top = 'auto';
+    envKeys.forEach(key => {
+      menu.appendChild(el('div', {
+        className: 'context-menu-item',
+        textContent: (key === state.environments.active ? '✓ ' : '  ') + (state.environments.envs[key].name || key),
+        onClick: () => {
+          state.environments.active = key;
+          saveState();
+          vscode.postMessage({ type: 'saveEnvironments', payload: state.environments });
+          closeContextMenu();
+          renderStatusBar();
+          renderEditor();
+        },
+      }));
+    });
+    document.body.appendChild(menu);
+    contextMenu = menu;
+    setTimeout(() => document.addEventListener('click', closeContextMenu, { once: true }));
+  }
+
+  function closeContextMenu() {
+    if (contextMenu) { contextMenu.remove(); contextMenu = null; }
+  }
+
+  // ── Set Secret Dialog ──
+  function showSetSecretDialog() {
+    const overlay = el('div', { className: 'modal-overlay' });
+    const modal = el('div', { className: 'modal' });
+    modal.appendChild(el('div', { className: 'modal-title', textContent: 'Manage Secrets' }));
+    modal.appendChild(el('div', { className: 'modal-desc', textContent: 'Secrets are stored securely. Use ${secret:KEY} in headers.' }));
+
+    const keyField = el('div', { className: 'modal-field' });
+    keyField.appendChild(el('label', { textContent: 'Secret Key' }));
+    const keyInput = el('input', {
+      className: 'input', type: 'text', placeholder: 'e.g. API_TOKEN',
+      onInput: e => { e.target.value = e.target.value.toUpperCase().replace(/\s/g, '_'); },
+    });
+    keyField.appendChild(keyInput);
+    modal.appendChild(keyField);
+
+    const valField = el('div', { className: 'modal-field' });
+    valField.appendChild(el('label', { textContent: 'Secret Value' }));
+    const valInput = el('input', { className: 'input', type: 'password', placeholder: 'Enter secret value' });
+    valField.appendChild(valInput);
+    modal.appendChild(valField);
+
+    const badgeContainer = el('div', { className: 'secret-badges' });
+    state.secretKeys.forEach(key => {
+      const badge = el('span', { className: 'secret-badge' });
+      badge.appendChild(el('span', { textContent: key }));
+      badge.appendChild(el('span', {
+        className: 'remove-btn', textContent: '×',
+        onClick: () => {
+          vscode.postMessage({ type: 'deleteSecret', payload: { key } });
+          state.secretKeys = state.secretKeys.filter(k => k !== key);
+          badge.remove();
+        },
+      }));
+      badgeContainer.appendChild(badge);
+    });
+    modal.appendChild(badgeContainer);
+
+    const actions = el('div', { className: 'modal-actions' });
+    actions.appendChild(el('button', { className: 'btn btn-secondary', textContent: 'Close', onClick: () => overlay.remove() }));
+    actions.appendChild(el('button', {
+      className: 'btn btn-primary', textContent: 'Save Secret',
+      onClick: () => {
+        const key = keyInput.value.trim();
+        const value = valInput.value;
+        if (key && value) {
+          vscode.postMessage({ type: 'setSecret', payload: { key, value } });
+          if (!state.secretKeys.includes(key)) {
+            state.secretKeys.push(key);
+            const badge = el('span', { className: 'secret-badge' });
+            badge.appendChild(el('span', { textContent: key }));
+            badge.appendChild(el('span', {
+              className: 'remove-btn', textContent: '×',
+              onClick: () => {
+                vscode.postMessage({ type: 'deleteSecret', payload: { key } });
+                state.secretKeys = state.secretKeys.filter(k => k !== key);
+                badge.remove();
+              },
+            }));
+            badgeContainer.appendChild(badge);
+          }
+          keyInput.value = '';
+          valInput.value = '';
+        }
+      },
+    }));
+    modal.appendChild(actions);
+    overlay.appendChild(modal);
+    overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
+    document.body.appendChild(overlay);
+    setTimeout(() => keyInput.focus(), 50);
+  }
+
+  // ── Operation Type Detection ──
+  function detectOperationType(queryText) {
+    const match = queryText.match(/^\s*(query|mutation|subscription)/m);
+    if (match) {
+      return match[1].charAt(0).toUpperCase() + match[1].slice(1);
+    }
+    return 'Query';
+  }
+
+  // ── Query Validation ──
+  function validateQuery(queryText) {
+    const trimmed = queryText.trim();
+    if (!trimmed) return 'Query is empty';
+    if (!/^\s*(query|mutation|subscription|\{)/m.test(trimmed)) return 'Missing query/mutation/subscription keyword';
+    const opens = (trimmed.match(/\{/g) || []).length;
+    const closes = (trimmed.match(/\}/g) || []).length;
+    if (opens !== closes) return 'Unbalanced braces: ' + opens + ' opening, ' + closes + ' closing';
+    return null;
+  }
+
+  // ── Argument Validation ──
+  function validateArgValue(value, typeName, required) {
+    if (!value && required) return '*Required';
+    if (!value) return null;
+    // Strip NON_NULL marker and list wrappers for checking
+    const base = typeName.replace(/[!\[\]]/g, '').trim();
+    if (base === 'Int') {
+      if (!/^-?\d+$/.test(value)) return 'Must be integer';
+    } else if (base === 'Float') {
+      if (!/^-?\d+(\.\d+)?$/.test(value)) return 'Must be number';
+    } else if (base === 'Boolean') {
+      if (value !== 'true' && value !== 'false') return 'Must be true/false';
+    }
+    return null;
+  }
+
+  // ── Query Bottom Panel (Fields + Args) ──
+  function buildQueryBottomPanel(ts) {
+    const hasFields = ts.availableFields && ts.availableFields.length > 0;
+    const hasArgs = ts.operationArgs && ts.operationArgs.length > 0;
+    if (!hasFields && !hasArgs) return null;
+
+    const panel = el('div', { className: 'query-bottom-panel' });
+
+    // Collapsible header
+    const header = el('div', {
+      className: 'query-bottom-panel-header',
+      onClick: () => { ts.bottomPanelExpanded = !ts.bottomPanelExpanded; renderEditor(); },
+    });
+    header.appendChild(el('span', { className: 'tree-icon', textContent: ts.bottomPanelExpanded ? '\u25BE' : '\u25B8' }));
+    header.appendChild(el('span', { textContent: 'Fields & Arguments' }));
+    panel.appendChild(header);
+
+    if (!ts.bottomPanelExpanded) return panel;
+
+    const body = el('div', { className: 'query-bottom-panel-body' });
+
+    // Fields section
+    if (hasFields) {
+      body.appendChild(el('div', {
+        className: 'fields-header',
+        textContent: 'Return Fields' + (ts.returnTypeName ? ' (' + ts.returnTypeName + ')' : ''),
+      }));
+
+      ts.availableFields.forEach(field => {
+        const isSelected = ts.selectedFields.includes(field.name);
+        const row = el('div', { className: 'field-row' + (isSelected ? ' selected' : '') });
+
+        const toggle = el('button', {
+          className: 'field-toggle',
+          textContent: isSelected ? '\u2713' : '+',
+          onClick: () => {
+            if (isSelected) {
+              ts.selectedFields = ts.selectedFields.filter(n => n !== field.name);
+            } else {
+              ts.selectedFields.push(field.name);
+            }
+            regenerateQuery(ts);
+            renderEditor();
+          },
+        });
+        row.appendChild(toggle);
+        row.appendChild(el('span', { className: 'field-name', textContent: field.name }));
+        row.appendChild(el('span', { className: 'field-type', textContent: field.type }));
+        body.appendChild(row);
+      });
+    }
+
+    // Arguments section
+    if (hasArgs) {
+      body.appendChild(el('div', {
+        className: 'fields-header',
+        style: { marginTop: hasFields ? '8px' : '0' },
+        textContent: 'Arguments',
+      }));
+
+      ts.operationArgs.forEach(arg => {
+        const row = el('div', { className: 'arg-row' });
+        row.appendChild(el('span', { className: 'arg-label', textContent: arg.name }));
+
+        const currentVal = ts.argValues[arg.name] || '';
+        const input = el('input', {
+          className: 'arg-input', type: 'text', value: currentVal,
+          placeholder: arg.required ? 'required' : 'optional',
+        });
+
+        const errorSpan = el('span', { className: 'arg-error' });
+        const validationErr = validateArgValue(currentVal, arg.type, arg.required);
+        if (validationErr) {
+          input.className += ' error';
+          errorSpan.textContent = validationErr;
+        }
+
+        input.addEventListener('input', () => {
+          ts.argValues[arg.name] = input.value;
+          syncVariablesFromArgs(ts);
+          syncDirtyState();
+          renderTabs();
+          const err = validateArgValue(input.value, arg.type, arg.required);
+          if (err) {
+            input.classList.add('error');
+            errorSpan.textContent = err;
+          } else {
+            input.classList.remove('error');
+            errorSpan.textContent = '';
+          }
+        });
+
+        input.addEventListener('blur', () => {
+          const err = validateArgValue(input.value, arg.type, arg.required);
+          if (err) {
+            input.classList.add('error');
+            errorSpan.textContent = err;
+          } else {
+            input.classList.remove('error');
+            errorSpan.textContent = '';
+          }
+        });
+
+        row.appendChild(input);
+        row.appendChild(el('span', { className: 'arg-type', textContent: arg.type }));
+        row.appendChild(errorSpan);
+        body.appendChild(row);
+      });
+    }
+
+    panel.appendChild(body);
+    return panel;
+  }
+
+  // ── Sync variables JSON from arg inputs ──
+  function syncVariablesFromArgs(ts) {
+    if (!ts.operationArgs || ts.operationArgs.length === 0) return;
+    const vars = {};
+    for (const arg of ts.operationArgs) {
+      const raw = ts.argValues[arg.name] || '';
+      const base = arg.type.replace(/[!\[\]]/g, '').trim();
+      if (raw === '') {
+        vars[arg.name] = null;
+      } else if (base === 'Int') {
+        const n = parseInt(raw, 10);
+        vars[arg.name] = isNaN(n) ? raw : n;
+      } else if (base === 'Float') {
+        const n = parseFloat(raw);
+        vars[arg.name] = isNaN(n) ? raw : n;
+      } else if (base === 'Boolean') {
+        vars[arg.name] = raw === 'true';
+      } else {
+        vars[arg.name] = raw;
+      }
+    }
+    ts.variables = JSON.stringify(vars, null, 2);
+  }
+
+  function regenerateQuery(ts) {
+    // Extract operation signature: everything up to the inner selection set
+    const match = ts.query.match(/^([\s\S]*?\{[\s\S]*?\{)\s*[\s\S]*?\}\s*\}$/);
+    if (!match) return;
+
+    const prefix = match[1];
+    const fields = ts.selectedFields.length > 0 ? ts.selectedFields : ['__typename'];
+    const fieldLines = fields.map(f => '    ' + f).join('\n');
+    ts.query = prefix + '\n' + fieldLines + '\n  }\n}';
+  }
+
+  init();
+})();

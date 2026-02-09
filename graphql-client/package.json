@@ -1,0 +1,60 @@
+{
+  "name": "graphql-client",
+  "displayName": "GraphQL Client",
+  "description": "A full-featured GraphQL client for VS Code with collections, environments, and secret management",
+  "version": "0.3.0",
+  "publisher": "graphql-client",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "graphqlClient",
+          "title": "GraphQL Client",
+          "icon": "resources/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "graphqlClient": [
+        {
+          "type": "webview",
+          "id": "graphqlClient.mainView",
+          "name": "GraphQL Client"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "graphqlClient.open",
+        "title": "Open GraphQL Client"
+      },
+      {
+        "command": "graphqlClient.importCollection",
+        "title": "GraphQL Client: Import Collection"
+      },
+      {
+        "command": "graphqlClient.exportCollections",
+        "title": "GraphQL Client: Export Collections"
+      }
+    ]
+  },
+  "scripts": {
+    "build": "node esbuild.js",
+    "watch": "node esbuild.js --watch",
+    "lint": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^25.2.1",
+    "@types/vscode": "^1.85.0",
+    "esbuild": "^0.20.0",
+    "typescript": "^5.3.0"
+  }
+}

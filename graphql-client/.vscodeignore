@@ -5,3 +5,4 @@ tsconfig.json
 esbuild.js
 **/*.ts
 **/*.map
+*.vsix

@@ -4,6 +4,11 @@
   "description": "A full-featured GraphQL client for VS Code with collections, environments, and secret management",
   "version": "0.3.0",
   "publisher": "graphql-client",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/poojithg14/GraphqlClient.git"
+  },
+  "license": "MIT",
   "engines": {
     "vscode": "^1.85.0"
   },

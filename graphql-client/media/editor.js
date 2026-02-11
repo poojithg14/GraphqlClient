@@ -7,10 +7,12 @@
   let state = vscode.getState() || {
     openTabs: [],
     activeTabId: null,
-    environments: { active: 'dev', envs: {} },
+    environments: { active: 'local', envs: {} },
     history: [],
-    secretKeys: [],
+    queryCost: null,
+    sharedHeaders: [],
   };
+  if (!state.sharedHeaders) state.sharedHeaders = [];
 
   let tabStates = {};
   let isLoading = false;
@@ -58,8 +60,6 @@
         saveState();
         break;
       case 'secretsList':
-        state.secretKeys = msg.payload;
-        saveState();
         break;
       case 'queryResult':
         isLoading = false;
@@ -75,7 +75,7 @@
           const ts = tabStates[state.activeTabId];
           ts.initialQuery = ts.query;
           ts.initialVariables = ts.variables;
-          ts.initialHeaders = ts.headers;
+          ts.initialHeaderEntries = ts.headerEntries.map(e => ({ ...e }));
           syncDirtyState();
           renderTabs();
         }
@@ -85,6 +85,17 @@
         break;
       case 'collectionsLoaded':
         // Used by save-to-collection dialog refresh
+        break;
+      case 'queryCostResult':
+        state.queryCost = msg.payload;
+        saveState();
+        renderCostBadge();
+        break;
+      case 'sharedHeadersLoaded':
+        state.sharedHeaders = msg.payload || [];
+        saveState();
+        break;
+      case 'nlResult':
         break;
     }
   });
@@ -99,7 +110,7 @@
 
     vscode.postMessage({ type: 'loadEnvironments' });
     vscode.postMessage({ type: 'loadHistory' });
-    vscode.postMessage({ type: 'listSecrets' });
+    vscode.postMessage({ type: 'loadSharedHeaders' });
 
     renderTabs();
     renderEditor();
@@ -126,16 +137,17 @@
 
       const initialQuery = req.query || '';
       const initialVariables = req.variables || '{}';
-      const initialHeaders = JSON.stringify(req.headers || {}, null, 2);
+      const headerEntries = headersToEntries(req.headers || {});
+      const initialHeaderEntries = headerEntries.map(e => ({ ...e }));
 
       tabStates[req.id] = {
         request: req,
         query: initialQuery,
         variables: initialVariables,
-        headers: initialHeaders,
+        headerEntries: headerEntries,
         initialQuery: initialQuery,
         initialVariables: initialVariables,
-        initialHeaders: initialHeaders,
+        initialHeaderEntries: initialHeaderEntries,
         response: null,
         responseTime: null,
         activeSubTab: 'query',
@@ -152,6 +164,7 @@
     saveState();
     renderTabs();
     renderEditor();
+
   }
 
   // ── Tabs ──
@@ -187,7 +200,7 @@
   function isTabDirty(ts) {
     return ts.query !== ts.initialQuery ||
       ts.variables !== ts.initialVariables ||
-      ts.headers !== ts.initialHeaders;
+      !headerEntriesEqual(ts.headerEntries, ts.initialHeaderEntries);
   }
 
   function closeTab(tabId) {
@@ -251,14 +264,11 @@
     const ts = tabStates[tabId];
     if (!ts) return;
 
-    let parsedHeaders = {};
-    try { parsedHeaders = JSON.parse(ts.headers || '{}'); } catch {}
-
     vscode.postMessage({
       type: 'saveRequest',
       payload: {
         requestId: tabId,
-        updates: { query: ts.query, variables: ts.variables, headers: parsedHeaders },
+        updates: { query: ts.query, variables: ts.variables, headers: entriesToHeaders(ts.headerEntries) },
       },
     });
   }
@@ -268,15 +278,13 @@
     for (const tab of state.openTabs) {
       const ts = tabStates[tab.id];
       if (ts && isTabDirty(ts)) {
-        let parsedHeaders = {};
-        try { parsedHeaders = JSON.parse(ts.headers || '{}'); } catch {}
         dirtyTabs.push({
           id: tab.id,
           name: tab.name,
           type: tab.type,
           query: ts.query,
           variables: ts.variables,
-          headers: parsedHeaders,
+          headers: entriesToHeaders(ts.headerEntries),
         });
       }
     }
@@ -330,17 +338,38 @@
         }
       },
     }));
+    // Cost badge
+    const costBadge = el('span', { className: 'cost-badge cost-low', textContent: '...' });
+    if (state.queryCost) {
+      costBadge.className = 'cost-badge cost-' + state.queryCost.riskLevel;
+      costBadge.textContent = state.queryCost.riskLevel.toUpperCase() + ' ' + state.queryCost.totalCost;
+      costBadge.title = state.queryCost.explanation.join('\n');
+    }
+    costBadge.addEventListener('click', () => {
+      if (state.queryCost) showCostTooltip(costBadge, state.queryCost);
+    });
+    endpointBar.appendChild(costBadge);
+
     endpointBar.appendChild(el('button', {
       className: 'btn btn-run',
       textContent: isLoading ? 'Running...' : '▶ Run',
       disabled: (!canRun) ? 'disabled' : undefined,
-      onClick: () => executeQuery(),
+      onClick: () => {
+        if (state.queryCost && (state.queryCost.riskLevel === 'high' || state.queryCost.riskLevel === 'critical')) {
+          showCostWarning(state.queryCost, () => executeQuery());
+        } else {
+          executeQuery();
+        }
+      },
     }));
     endpointBar.appendChild(el('button', {
       className: 'btn btn-secondary', textContent: 'Save',
       onClick: () => saveCurrentRequest(),
     }));
     content.appendChild(endpointBar);
+
+    // Trigger cost calculation
+    requestCostCalculation(ts.query);
 
     // Query error bar
     if (queryError) {
@@ -368,6 +397,7 @@
         ts.query = val;
         syncDirtyState();
         renderTabs();
+        requestCostCalculation(val);
         // Live-update error bar + run button without full re-render
         const existingErr = content.querySelector('.query-error-bar');
         const newErr = validateQuery(val);
@@ -386,17 +416,19 @@
       const bottomPanel = buildQueryBottomPanel(ts);
       if (bottomPanel) leftContent.appendChild(bottomPanel);
     } else {
-      leftContent.appendChild(buildCodeEditor(ts.headers, 'json', val => { ts.headers = val; syncDirtyState(); renderTabs(); }));
+      leftContent.appendChild(buildHeadersEditor(ts));
     }
     leftPanel.appendChild(leftContent);
 
-    // Right panel (response/history)
+    // Right panel (response/history/diff)
     const rightPanel = el('div', { className: 'editor-panel' });
     const rightSubTabs = el('div', { className: 'sub-tabs' });
     ['response', 'history'].forEach(tab => {
+      let label = tab.charAt(0).toUpperCase() + tab.slice(1);
+      if (tab === 'response' && ts.responseTime != null) label += ' (' + ts.responseTime + 'ms)';
       rightSubTabs.appendChild(el('button', {
         className: 'sub-tab' + (ts.responseSubTab === tab ? ' active' : ''),
-        textContent: tab.charAt(0).toUpperCase() + tab.slice(1) + (tab === 'response' && ts.responseTime != null ? ' (' + ts.responseTime + 'ms)' : ''),
+        textContent: label,
         onClick: () => { ts.responseSubTab = tab; renderEditor(); },
       }));
     });
@@ -505,6 +537,135 @@
 
   function escapeHtml(text) {
     return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+
+  // ── Headers Editor ──
+  function buildHeaderRowEl(entries, idx, rowsContainer, onChange) {
+    const entry = entries[idx];
+    const row = el('div', { className: 'header-row' + (entry.enabled ? '' : ' disabled') });
+
+    const cb = el('input', { type: 'checkbox' });
+    cb.checked = entry.enabled;
+    cb.addEventListener('change', () => {
+      entry.enabled = cb.checked;
+      row.className = 'header-row' + (entry.enabled ? '' : ' disabled');
+      if (onChange) onChange();
+    });
+    row.appendChild(cb);
+
+    const keyInput = el('input', {
+      className: 'header-key-input', type: 'text', value: entry.key,
+      placeholder: 'Header name',
+    });
+    keyInput.addEventListener('input', () => {
+      entry.key = keyInput.value;
+      if (onChange) onChange();
+    });
+    row.appendChild(keyInput);
+
+    const valInput = el('input', {
+      className: 'header-value-input', type: 'text', value: entry.value,
+      placeholder: 'Value',
+    });
+    valInput.addEventListener('input', () => {
+      entry.value = valInput.value;
+      if (onChange) onChange();
+    });
+    row.appendChild(valInput);
+
+    const delBtn = el('button', {
+      className: 'header-delete-btn', textContent: '\u00D7',
+      onClick: () => {
+        entries.splice(idx, 1);
+        if (onChange) onChange();
+        rebuildRows(entries, rowsContainer, onChange);
+      },
+    });
+    row.appendChild(delBtn);
+    return row;
+  }
+
+  function rebuildRows(entries, rowsContainer, onChange) {
+    rowsContainer.innerHTML = '';
+    entries.forEach((_, idx) => {
+      rowsContainer.appendChild(buildHeaderRowEl(entries, idx, rowsContainer, onChange));
+    });
+  }
+
+  function buildHeadersEditor(ts) {
+    const wrap = el('div', { className: 'headers-editor' });
+    const rowsContainer = el('div', { className: 'headers-rows' });
+
+    const onChange = () => { syncDirtyState(); renderTabs(); };
+    rebuildRows(ts.headerEntries, rowsContainer, onChange);
+    wrap.appendChild(rowsContainer);
+
+    const actions = el('div', { className: 'headers-actions' });
+    actions.appendChild(el('button', {
+      className: 'btn btn-secondary', textContent: '+ New header',
+      onClick: () => {
+        ts.headerEntries.push({ key: '', value: '', enabled: true });
+        const newRow = buildHeaderRowEl(ts.headerEntries, ts.headerEntries.length - 1, rowsContainer, onChange);
+        rowsContainer.appendChild(newRow);
+        const ki = newRow.querySelector('.header-key-input');
+        if (ki) ki.focus();
+      },
+    }));
+    actions.appendChild(el('button', {
+      className: 'btn-link', textContent: 'Set shared headers',
+      onClick: () => showSharedHeadersModal(),
+    }));
+    wrap.appendChild(actions);
+    return wrap;
+  }
+
+  // ── Shared Headers Modal ──
+  function showSharedHeadersModal() {
+    const entries = (state.sharedHeaders || []).map(e => ({ ...e }));
+    if (entries.length === 0 || (entries[entries.length - 1].key || entries[entries.length - 1].value)) {
+      entries.push({ key: '', value: '', enabled: true });
+    }
+
+    const overlay = el('div', { className: 'modal-overlay' });
+    const modal = el('div', { className: 'modal', style: { maxWidth: '560px' } });
+    modal.appendChild(el('div', { className: 'modal-title', textContent: 'Shared Headers' }));
+    modal.appendChild(el('div', { className: 'modal-desc', textContent: 'These headers are automatically included in every request.' }));
+
+    const rowsContainer = el('div', { className: 'headers-rows', style: { maxHeight: '300px', overflow: 'auto' } });
+    rebuildRows(entries, rowsContainer, null);
+    modal.appendChild(rowsContainer);
+
+    modal.appendChild(el('button', {
+      className: 'btn btn-secondary', textContent: '+ New header',
+      style: { marginTop: '8px' },
+      onClick: () => {
+        entries.push({ key: '', value: '', enabled: true });
+        const newRow = buildHeaderRowEl(entries, entries.length - 1, rowsContainer, null);
+        rowsContainer.appendChild(newRow);
+        const ki = newRow.querySelector('.header-key-input');
+        if (ki) ki.focus();
+      },
+    }));
+
+    const actions = el('div', { className: 'modal-actions' });
+    actions.appendChild(el('button', {
+      className: 'btn btn-secondary', textContent: 'Cancel',
+      onClick: () => overlay.remove(),
+    }));
+    actions.appendChild(el('button', {
+      className: 'btn btn-primary', textContent: 'Save',
+      onClick: () => {
+        const toSave = entries.filter(e => e.key.trim() || e.value.trim());
+        state.sharedHeaders = toSave;
+        saveState();
+        vscode.postMessage({ type: 'saveSharedHeaders', payload: toSave });
+        overlay.remove();
+      },
+    }));
+    modal.appendChild(actions);
+    overlay.appendChild(modal);
+    overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
+    document.body.appendChild(overlay);
   }
 
   // ── Response Viewer ──
@@ -624,15 +785,19 @@
     const endpoint = env ? env.endpoint : '';
 
     if (!endpoint) {
-      handleQueryError({ error: 'No endpoint configured. Set an endpoint URL first.', responseTime: 0 });
-      isLoading = false;
+      // Focus the endpoint input instead of showing an error
+      const endpointInput = document.querySelector('.endpoint-bar .input');
+      if (endpointInput) {
+        endpointInput.focus();
+        endpointInput.placeholder = 'Please enter a GraphQL endpoint URL first';
+      }
       return;
     }
 
     let envHeaders = {};
     if (env && env.headers) envHeaders = { ...env.headers };
-    let customHeaders = {};
-    try { customHeaders = JSON.parse(ts.headers || '{}'); } catch {}
+    const sharedHeaders = entriesToHeaders(state.sharedHeaders || []);
+    const customHeaders = entriesToHeaders(ts.headerEntries);
 
     isLoading = true;
     renderEditor();
@@ -642,7 +807,7 @@
       payload: {
         query: ts.query,
         variables: ts.variables,
-        headers: { ...envHeaders, ...customHeaders },
+        headers: { ...envHeaders, ...sharedHeaders, ...customHeaders },
         endpoint: endpoint,
       },
     });
@@ -707,20 +872,42 @@
     try { return JSON.parse(str || '{}'); } catch { return {}; }
   }
 
+  // ── Header Entry Utilities ──
+  function headersToEntries(headers) {
+    const entries = [];
+    for (const [key, value] of Object.entries(headers || {})) {
+      entries.push({ key, value, enabled: true });
+    }
+    return entries;
+  }
+
+  function entriesToHeaders(entries) {
+    const result = {};
+    for (const e of entries) {
+      if (e.enabled && e.key.trim()) result[e.key.trim()] = e.value;
+    }
+    return result;
+  }
+
+  function headerEntriesEqual(a, b) {
+    if (a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) {
+      if (a[i].key !== b[i].key || a[i].value !== b[i].value || a[i].enabled !== b[i].enabled) return false;
+    }
+    return true;
+  }
+
   // ── Save Request ──
   function saveCurrentRequest() {
     if (!state.activeTabId) return;
     const ts = tabStates[state.activeTabId];
     if (!ts) return;
 
-    let parsedHeaders = {};
-    try { parsedHeaders = JSON.parse(ts.headers || '{}'); } catch {}
-
     vscode.postMessage({
       type: 'saveRequest',
       payload: {
         requestId: state.activeTabId,
-        updates: { query: ts.query, variables: ts.variables, headers: parsedHeaders },
+        updates: { query: ts.query, variables: ts.variables, headers: entriesToHeaders(ts.headerEntries) },
       },
     });
   }
@@ -832,9 +1019,6 @@
         if (isNewCol && !newColInput.value.trim()) return;
         if (isNewFolder && !newFolderInput.value.trim()) return;
 
-        let parsedHeaders = {};
-        try { parsedHeaders = JSON.parse(ts.headers || '{}'); } catch {}
-
         vscode.postMessage({
           type: 'saveNewRequest',
           payload: {
@@ -848,7 +1032,7 @@
               type: ts.request ? ts.request.type : 'query',
               query: ts.query,
               variables: ts.variables,
-              headers: parsedHeaders,
+              headers: entriesToHeaders(ts.headerEntries),
             },
           },
         });
@@ -878,11 +1062,6 @@
     const envConfig = state.environments.envs[envKey];
     envItem.appendChild(el('span', { textContent: envConfig ? envConfig.name : envKey }));
     left.appendChild(envItem);
-
-    right.appendChild(el('div', {
-      className: 'status-item', textContent: '🔑 Secrets',
-      onClick: () => showSetSecretDialog(),
-    }));
 
     bar.appendChild(left);
     bar.appendChild(right);
@@ -918,79 +1097,6 @@
 
   function closeContextMenu() {
     if (contextMenu) { contextMenu.remove(); contextMenu = null; }
-  }
-
-  // ── Set Secret Dialog ──
-  function showSetSecretDialog() {
-    const overlay = el('div', { className: 'modal-overlay' });
-    const modal = el('div', { className: 'modal' });
-    modal.appendChild(el('div', { className: 'modal-title', textContent: 'Manage Secrets' }));
-    modal.appendChild(el('div', { className: 'modal-desc', textContent: 'Secrets are stored securely. Use ${secret:KEY} in headers.' }));
-
-    const keyField = el('div', { className: 'modal-field' });
-    keyField.appendChild(el('label', { textContent: 'Secret Key' }));
-    const keyInput = el('input', {
-      className: 'input', type: 'text', placeholder: 'e.g. API_TOKEN',
-      onInput: e => { e.target.value = e.target.value.toUpperCase().replace(/\s/g, '_'); },
-    });
-    keyField.appendChild(keyInput);
-    modal.appendChild(keyField);
-
-    const valField = el('div', { className: 'modal-field' });
-    valField.appendChild(el('label', { textContent: 'Secret Value' }));
-    const valInput = el('input', { className: 'input', type: 'password', placeholder: 'Enter secret value' });
-    valField.appendChild(valInput);
-    modal.appendChild(valField);
-
-    const badgeContainer = el('div', { className: 'secret-badges' });
-    state.secretKeys.forEach(key => {
-      const badge = el('span', { className: 'secret-badge' });
-      badge.appendChild(el('span', { textContent: key }));
-      badge.appendChild(el('span', {
-        className: 'remove-btn', textContent: '×',
-        onClick: () => {
-          vscode.postMessage({ type: 'deleteSecret', payload: { key } });
-          state.secretKeys = state.secretKeys.filter(k => k !== key);
-          badge.remove();
-        },
-      }));
-      badgeContainer.appendChild(badge);
-    });
-    modal.appendChild(badgeContainer);
-
-    const actions = el('div', { className: 'modal-actions' });
-    actions.appendChild(el('button', { className: 'btn btn-secondary', textContent: 'Close', onClick: () => overlay.remove() }));
-    actions.appendChild(el('button', {
-      className: 'btn btn-primary', textContent: 'Save Secret',
-      onClick: () => {
-        const key = keyInput.value.trim();
-        const value = valInput.value;
-        if (key && value) {
-          vscode.postMessage({ type: 'setSecret', payload: { key, value } });
-          if (!state.secretKeys.includes(key)) {
-            state.secretKeys.push(key);
-            const badge = el('span', { className: 'secret-badge' });
-            badge.appendChild(el('span', { textContent: key }));
-            badge.appendChild(el('span', {
-              className: 'remove-btn', textContent: '×',
-              onClick: () => {
-                vscode.postMessage({ type: 'deleteSecret', payload: { key } });
-                state.secretKeys = state.secretKeys.filter(k => k !== key);
-                badge.remove();
-              },
-            }));
-            badgeContainer.appendChild(badge);
-          }
-          keyInput.value = '';
-          valInput.value = '';
-        }
-      },
-    }));
-    modal.appendChild(actions);
-    overlay.appendChild(modal);
-    overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
-    document.body.appendChild(overlay);
-    setTimeout(() => keyInput.focus(), 50);
   }
 
   // ── Operation Type Detection ──
@@ -1176,6 +1282,54 @@
     const fields = ts.selectedFields.length > 0 ? ts.selectedFields : ['__typename'];
     const fieldLines = fields.map(f => '    ' + f).join('\n');
     ts.query = prefix + '\n' + fieldLines + '\n  }\n}';
+  }
+
+  // ── Cost Badge ──
+  let costDebounce = null;
+  function requestCostCalculation(query) {
+    clearTimeout(costDebounce);
+    costDebounce = setTimeout(() => {
+      vscode.postMessage({ type: 'calculateQueryCost', payload: { query } });
+    }, 500);
+  }
+
+  function renderCostBadge() {
+    const badge = document.querySelector('.cost-badge');
+    if (!badge || !state.queryCost) return;
+    const cost = state.queryCost;
+    badge.className = 'cost-badge cost-' + cost.riskLevel;
+    badge.textContent = cost.riskLevel.toUpperCase() + ' ' + cost.totalCost;
+    badge.title = cost.explanation.join('\n');
+  }
+
+  function showCostTooltip(badge, cost) {
+    // Remove existing
+    const existing = document.querySelector('.cost-tooltip');
+    if (existing) { existing.remove(); return; }
+
+    const tooltip = el('div', { className: 'cost-tooltip' });
+    cost.explanation.forEach(function(line) {
+      tooltip.appendChild(el('div', { className: 'cost-tooltip-item', textContent: line }));
+    });
+    badge.style.position = 'relative';
+    badge.appendChild(tooltip);
+    setTimeout(function() { document.addEventListener('click', function() { tooltip.remove(); }, { once: true }); });
+  }
+
+  function showCostWarning(cost, onProceed) {
+    const overlay = el('div', { className: 'modal-overlay' });
+    const modal = el('div', { className: 'modal' });
+    modal.appendChild(el('div', { className: 'modal-title', textContent: 'High Cost Query Warning' }));
+    modal.appendChild(el('div', { className: 'cost-warning', textContent: cost.riskLevel.toUpperCase() + ' risk — Cost: ' + cost.totalCost }));
+    modal.appendChild(el('div', { className: 'modal-desc', textContent: cost.explanation.join('. ') }));
+
+    const actions = el('div', { className: 'modal-actions' });
+    actions.appendChild(el('button', { className: 'btn btn-secondary', textContent: 'Cancel', onClick: function() { overlay.remove(); } }));
+    actions.appendChild(el('button', { className: 'btn btn-primary', textContent: 'Run Anyway', onClick: function() { overlay.remove(); onProceed(); } }));
+    modal.appendChild(actions);
+    overlay.appendChild(modal);
+    overlay.addEventListener('click', function(e) { if (e.target === overlay) overlay.remove(); });
+    document.body.appendChild(overlay);
   }
 
   init();

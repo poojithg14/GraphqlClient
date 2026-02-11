@@ -1,6 +1,8 @@
 import * as vscode from 'vscode';
 import { StorageService } from './storage';
 import { executeGraphQLQuery } from './graphqlExecutor';
+import { calculateQueryCost } from './queryCostCalculator';
+import { parseNaturalLanguage, generateFromNL, callAIProvider, generateResolverStub } from './nlToGraphql';
 import type { GraphQLRequest } from './types';
 
 interface DirtyTab {
@@ -198,8 +200,55 @@ export class EditorPanelManager {
         case 'dirtyState':
           this.dirtyTabs = message.payload;
           break;
+
+        case 'calculateQueryCost': {
+          const schema = this.storage.loadSchema();
+          const cost = calculateQueryCost(message.payload.query, schema);
+          webview.postMessage({ type: 'queryCostResult', payload: cost });
+          break;
+        }
+
+        case 'nlToGraphql':
+          await this.handleNLToGraphql(webview, message.payload);
+          break;
+
+        case 'generateResolver':
+          this.handleGenerateResolver(webview, message.payload);
+          break;
+
+        case 'loadAIConfig': {
+          const aiConfig = this.storage.loadAIConfig();
+          webview.postMessage({ type: 'aiConfigLoaded', payload: aiConfig ?? null });
+          break;
+        }
+
+        case 'saveAIConfig':
+          this.storage.saveAIConfig(message.payload);
+          break;
+
+        case 'loadSharedHeaders':
+          webview.postMessage({
+            type: 'sharedHeadersLoaded',
+            payload: this.storage.loadSharedHeaders(),
+          });
+          break;
+
+        case 'saveSharedHeaders':
+          this.storage.saveSharedHeaders(message.payload);
+          break;
+
       }
     });
+  }
+
+  /** Notify the editor panel that environments changed (e.g. from sidebar) */
+  public notifyEnvironmentsChanged(): void {
+    if (this.panel) {
+      this.panel.webview.postMessage({
+        type: 'environmentsLoaded',
+        payload: this.storage.loadEnvironments(),
+      });
+    }
   }
 
   // Callback for when a request is saved from the editor
@@ -223,6 +272,57 @@ export class EditorPanelManager {
         });
       }
     }
+  }
+
+  private async handleNLToGraphql(
+    webview: vscode.Webview,
+    payload: { input: string; mode: 'rule' | 'ai' },
+  ): Promise<void> {
+    const schema = this.storage.loadSchema();
+    if (!schema) {
+      webview.postMessage({ type: 'schemaError', payload: { error: 'No schema loaded. Introspect first.' } });
+      return;
+    }
+
+    try {
+      if (payload.mode === 'ai') {
+        const config = this.storage.loadAIConfig();
+        if (!config) {
+          webview.postMessage({ type: 'schemaError', payload: { error: 'AI provider not configured.' } });
+          return;
+        }
+        const apiKey = await this.storage.getSecret(config.apiKeySecret);
+        if (!apiKey) {
+          webview.postMessage({ type: 'schemaError', payload: { error: `API key secret "${config.apiKeySecret}" not found.` } });
+          return;
+        }
+        const result = await callAIProvider(payload.input, schema, config, apiKey);
+        webview.postMessage({ type: 'nlResult', payload: { query: result.query, variables: result.variables } });
+      } else {
+        const parsed = parseNaturalLanguage(payload.input, schema);
+        const result = generateFromNL(parsed, schema);
+        webview.postMessage({ type: 'nlResult', payload: { query: result.query, variables: result.variables, returnTypeName: result.returnTypeName, availableFields: result.availableFields, operationArgs: result.operationArgs } });
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      webview.postMessage({ type: 'schemaError', payload: { error: 'NL generation failed: ' + msg } });
+    }
+  }
+
+  private handleGenerateResolver(
+    webview: vscode.Webview,
+    payload: { operationType: 'query' | 'mutation'; fieldName: string },
+  ): void {
+    const schema = this.storage.loadSchema();
+    if (!schema) {
+      webview.postMessage({ type: 'schemaError', payload: { error: 'No schema loaded' } });
+      return;
+    }
+    const result = generateResolverStub(schema, payload.operationType, payload.fieldName);
+    webview.postMessage({
+      type: 'nlResult',
+      payload: { query: '', variables: '{}', resolverCode: result.code },
+    });
   }
 
   private async handleExecuteQuery(

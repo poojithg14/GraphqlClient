@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import type { Collection, Environment, HistoryEntry, IntrospectedSchema } from './types';
+import type { Collection, Environment, HistoryEntry, IntrospectedSchema, ImpactReport, AIProviderConfig, HeaderEntry } from './types';
 
 const KEYS = {
   collections: 'graphqlClient.collections',
@@ -7,16 +7,20 @@ const KEYS = {
   history: 'graphqlClient.history',
   secretKeys: 'graphqlClient.secretKeys',
   schema: 'graphqlClient.schema',
+  previousSchema: 'graphqlClient.previousSchema',
+  impactReport: 'graphqlClient.impactReport',
+  aiConfig: 'graphqlClient.aiConfig',
+  sharedHeaders: 'graphqlClient.sharedHeaders',
   migrated: 'graphqlClient.migrated',
 } as const;
 
 const MAX_HISTORY = 50;
 
 const DEFAULT_ENVIRONMENT: Environment = {
-  active: 'dev',
+  active: 'local',
   envs: {
-    dev: {
-      name: 'Development',
+    local: {
+      name: 'Local',
       endpoint: '',
       headers: {
         'Content-Type': 'application/json',
@@ -93,6 +97,46 @@ export class StorageService {
 
   loadSchema(): IntrospectedSchema | undefined {
     return this.workspaceState.get<IntrospectedSchema>(KEYS.schema);
+  }
+
+  // ── Previous Schema (for diffing) ──
+
+  savePreviousSchema(schema: IntrospectedSchema): void {
+    this.workspaceState.update(KEYS.previousSchema, schema);
+  }
+
+  loadPreviousSchema(): IntrospectedSchema | undefined {
+    return this.workspaceState.get<IntrospectedSchema>(KEYS.previousSchema);
+  }
+
+  // ── Impact Report Cache ──
+
+  saveImpactReport(report: ImpactReport): void {
+    this.workspaceState.update(KEYS.impactReport, report);
+  }
+
+  loadImpactReport(): ImpactReport | undefined {
+    return this.workspaceState.get<ImpactReport>(KEYS.impactReport);
+  }
+
+  // ── AI Config ──
+
+  saveAIConfig(config: AIProviderConfig): void {
+    this.workspaceState.update(KEYS.aiConfig, config);
+  }
+
+  loadAIConfig(): AIProviderConfig | undefined {
+    return this.workspaceState.get<AIProviderConfig>(KEYS.aiConfig);
+  }
+
+  // ── Shared Headers (global — persists across workspaces) ──
+
+  saveSharedHeaders(entries: HeaderEntry[]): void {
+    this.globalState.update(KEYS.sharedHeaders, entries);
+  }
+
+  loadSharedHeaders(): HeaderEntry[] {
+    return this.globalState.get<HeaderEntry[]>(KEYS.sharedHeaders) ?? [];
   }
 
   // ── Secrets (global) ──

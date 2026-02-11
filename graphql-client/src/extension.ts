@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import { GraphQLClientViewProvider } from './webviewProvider';
 import { EditorPanelManager } from './editorPanel';
 import { StorageService } from './storage';
-import { detectGraphQLEndpoint } from './serviceDetector';
+import { detectGraphQLEndpoint, probeEndpoint } from './serviceDetector';
 
 export function activate(context: vscode.ExtensionContext): void {
   const storage = new StorageService(context.globalState, context.secrets, context.workspaceState);
@@ -37,18 +37,47 @@ export function activate(context: vscode.ExtensionContext): void {
     sidebarProvider.notifyCollectionsChanged();
   };
 
-  // Auto-detect GraphQL endpoint
-  detectGraphQLEndpoint().then(detected => {
-    if (detected) {
-      const envs = storage.loadEnvironments();
-      const activeEnv = envs.envs[envs.active];
-      if (activeEnv && !activeEnv.endpoint) {
+  // When environments change from the sidebar, notify the editor panel
+  sidebarProvider.onEnvironmentsChanged = () => {
+    editorPanel.notifyEnvironmentsChanged();
+  };
+
+  // Auto-detect GraphQL endpoint on activation
+  const envs = storage.loadEnvironments();
+  const activeEnv = envs.envs[envs.active];
+  if (activeEnv) {
+    const resolveEndpoint = async () => {
+      // If there's a saved endpoint, check if it's still reachable
+      if (activeEnv.endpoint) {
+        const reachable = await probeEndpoint(activeEnv.endpoint);
+        if (reachable) return; // saved endpoint works, nothing to do
+        // Saved endpoint is stale — clear it and re-detect
+        activeEnv.endpoint = '';
+      }
+
+      const detected = await detectGraphQLEndpoint();
+      if (detected) {
         activeEnv.endpoint = detected;
         storage.saveEnvironments(envs);
         sidebarProvider.notifyEnvironmentsChanged();
+        editorPanel.notifyEnvironmentsChanged();
+      } else {
+        const url = await vscode.window.showInputBox({
+          title: 'GraphQL Endpoint',
+          prompt: 'No running GraphQL server found. Enter the endpoint URL:',
+          placeHolder: 'http://localhost:4000/graphql',
+          ignoreFocusOut: true,
+        });
+        if (url) {
+          activeEnv.endpoint = url;
+          storage.saveEnvironments(envs);
+          sidebarProvider.notifyEnvironmentsChanged();
+          editorPanel.notifyEnvironmentsChanged();
+        }
       }
-    }
-  });
+    };
+    resolveEndpoint();
+  }
 
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider(

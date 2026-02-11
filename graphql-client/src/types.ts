@@ -1,5 +1,11 @@
 // ── Data Models ──
 
+export interface HeaderEntry {
+  key: string;
+  value: string;
+  enabled: boolean;
+}
+
 export interface GraphQLRequest {
   id: string;
   name: string;
@@ -19,6 +25,7 @@ export interface Collection {
   id: string;
   name: string;
   folders: Folder[];
+  environment?: string;
 }
 
 export interface EnvironmentConfig {
@@ -101,7 +108,17 @@ export type WebviewMessage =
   | { type: 'loadSchema' }
   | { type: 'generateOperation'; payload: { operationType: 'query' | 'mutation'; fieldName: string } }
   | { type: 'saveRequest'; payload: { requestId: string; updates: { query: string; variables: string; headers: Record<string, string> } } }
-  | { type: 'saveNewRequest'; payload: { collectionId: string; folderId: string; newCollectionName: string; newFolderName: string; request: { id: string; name: string; type: 'query' | 'mutation' | 'subscription'; query: string; variables: string; headers: Record<string, string> } } };
+  | { type: 'saveNewRequest'; payload: { collectionId: string; folderId: string; newCollectionName: string; newFolderName: string; request: { id: string; name: string; type: 'query' | 'mutation' | 'subscription'; query: string; variables: string; headers: Record<string, string> } } }
+  | { type: 'calculateQueryCost'; payload: { query: string } }
+  | { type: 'loadImpactReport' }
+  | { type: 'autoHealQuery'; payload: { requestId: string; collectionId: string; folderId: string; fixes: QueryHealFix[] } }
+  | { type: 'autoHealAll'; payload: { entries: Array<{ requestId: string; collectionId: string; folderId: string; fixes: QueryHealFix[] }> } }
+  | { type: 'nlToGraphql'; payload: { input: string; mode: 'rule' | 'ai' } }
+  | { type: 'generateResolver'; payload: { operationType: 'query' | 'mutation'; fieldName: string } }
+  | { type: 'saveAIConfig'; payload: AIProviderConfig }
+  | { type: 'loadAIConfig' }
+  | { type: 'loadSharedHeaders' }
+  | { type: 'saveSharedHeaders'; payload: HeaderEntry[] };
 
 // ── Extension → Webview Messages ──
 
@@ -121,4 +138,139 @@ export type ExtensionMessage =
   | { type: 'schemaIntrospecting' }
   | { type: 'operationGenerated'; payload: { name: string; type: 'query' | 'mutation'; query: string; variables: string; returnTypeName: string | null; availableFields: Array<{ name: string; type: string; hasSubFields: boolean }>; operationArgs: Array<{ name: string; type: string; required: boolean; defaultValue: string | null }> } }
   | { type: 'promptSaveToCollection'; payload: Collection[] }
-  | { type: 'saveConfirmed' };
+  | { type: 'saveConfirmed' }
+  | { type: 'queryCostResult'; payload: QueryCostBreakdown }
+  | { type: 'impactReportReady'; payload: ImpactReport }
+  | { type: 'impactReportLoaded'; payload: ImpactReport }
+  | { type: 'autoHealComplete'; payload: { healed: number; total: number } }
+  | { type: 'nlResult'; payload: { query: string; variables: string; resolverCode?: string; returnTypeName?: string | null; availableFields?: Array<{ name: string; type: string; hasSubFields: boolean }>; operationArgs?: Array<{ name: string; type: string; required: boolean; defaultValue: string | null }> } }
+  | { type: 'aiConfigLoaded'; payload: AIProviderConfig | null }
+  | { type: 'sharedHeadersLoaded'; payload: HeaderEntry[] };
+
+// ── Schema Diff ──
+
+export interface SchemaFieldChange {
+  typeName: string;
+  fieldName: string;
+  changeType: 'removed' | 'renamed' | 'type_changed' | 'args_changed';
+  suggestedReplacement: string | null;
+  confidence: number;
+}
+
+export interface SchemaDiffResult {
+  addedTypes: string[];
+  removedTypes: string[];
+  fieldChanges: SchemaFieldChange[];
+  hasBreakingChanges: boolean;
+  summary: string;
+}
+
+// ── Query Analysis ──
+
+export interface ExtractedFieldRef {
+  path: string[];
+  typeName: string;
+  fieldName: string;
+  lineNumber: number;
+  aliasOf?: string;
+}
+
+export interface QueryAnalysis {
+  operationType: string;
+  rootFieldName: string;
+  extractedFields: ExtractedFieldRef[];
+  maxDepth: number;
+  listFieldPaths: string[][];
+  variableDefinitions: Array<{ name: string; type: string }>;
+}
+
+// ── Impact Analysis ──
+
+export interface QueryImpactEntry {
+  requestId: string;
+  requestName: string;
+  collectionName: string;
+  folderName: string;
+  status: 'broken' | 'affected' | 'safe';
+  brokenFields: SchemaFieldChange[];
+  autoFixAvailable: boolean;
+}
+
+export interface ImpactReport {
+  timestamp: string;
+  diff: SchemaDiffResult;
+  entries: QueryImpactEntry[];
+  brokenCount: number;
+  affectedCount: number;
+  safeCount: number;
+}
+
+// ── Query Cost Prediction ──
+
+export interface QueryCostBreakdown {
+  totalCost: number;
+  fieldCount: number;
+  maxDepth: number;
+  listMultiplier: number;
+  depthPenalty: number;
+  riskLevel: 'low' | 'medium' | 'high' | 'critical';
+  explanation: string[];
+}
+
+// ── NL to GraphQL ──
+
+export interface NLParseResult {
+  intent: 'get' | 'list' | 'create' | 'update' | 'delete' | 'unknown';
+  entityName: string;
+  fieldHints: string[];
+  filters: Array<{ field: string; value: string }>;
+  confidence: number;
+}
+
+export interface GeneratedResolver {
+  code: string;
+  language: string;
+  operationType: string;
+  fieldName: string;
+}
+
+// ── Cross-Environment Diffing ──
+
+export interface EnvExecutionResult {
+  envKey: string;
+  envName: string;
+  endpoint: string;
+  data: unknown;
+  responseTime: number;
+  error?: string;
+  success: boolean;
+}
+
+export interface DiffNode {
+  path: string;
+  type: 'added' | 'removed' | 'changed' | 'same';
+  leftValue?: unknown;
+  rightValue?: unknown;
+  children?: DiffNode[];
+}
+
+export interface CrossEnvDiffResult {
+  results: EnvExecutionResult[];
+  diffs: Array<{ leftEnv: string; rightEnv: string; nodes: DiffNode[] }>;
+}
+
+// ── AI Provider Config ──
+
+export interface AIProviderConfig {
+  provider: 'openai' | 'anthropic';
+  model: string;
+  apiKeySecret: string;
+}
+
+// ── Query Heal Fix ──
+
+export interface QueryHealFix {
+  oldField: string;
+  newField: string;
+  lineNumber: number;
+}

@@ -42,6 +42,8 @@ html, body {
 .btn-primary:hover { background: var(--vscode-button-hoverBackground); }
 .btn-secondary { background: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground); }
 .btn-secondary:hover { background: var(--vscode-button-secondaryHoverBackground); }
+.btn-destructive { background: var(--vscode-errorForeground, #f14c4c); color: #fff; }
+.btn-destructive:hover { opacity: 0.9; }
 .btn-icon {
   padding: 3px; background: transparent; color: var(--vscode-foreground);
   border: none; border-radius: 3px; cursor: pointer; opacity: 0.7;
@@ -161,6 +163,26 @@ html, body {
 .syn-number { color: var(--vscode-charts-green, #b5cea8); }
 .syn-directive { color: var(--vscode-charts-purple, #c586c0); }
 
+/* Environment Dropdown */
+.env-dropdown-wrap {
+  display: flex; align-items: center; gap: 2px; flex-shrink: 0;
+}
+.env-dropdown {
+  font-size: 10px; padding: 2px 18px 2px 4px;
+  max-width: 90px; min-width: 60px;
+}
+.env-add-btn, .env-del-btn {
+  font-size: 12px !important; padding: 2px !important; opacity: 0.6;
+}
+.env-add-btn:hover, .env-del-btn:hover { opacity: 1; }
+.env-del-btn:hover { color: var(--vscode-errorForeground, #f14c4c); }
+.env-tag {
+  font-size: 9px; padding: 0 4px; border-radius: 3px;
+  background: var(--vscode-badge-background, rgba(255,255,255,0.1));
+  color: var(--vscode-badge-foreground, var(--vscode-descriptionForeground));
+  flex-shrink: 0; margin-left: 4px; white-space: nowrap;
+}
+
 /* Hidden */
 .sidebar-search.hidden, .tree.hidden { display: none; }
 
@@ -241,4 +263,99 @@ html, body {
 
 .schema-fetched-at {
   padding: 4px 12px; font-size: 10px; opacity: 0.4;
+}
+
+/* ── NL Bar ── */
+.nl-bar {
+  display: flex; align-items: center; gap: 4px;
+  padding: 4px 10px;
+  border-bottom: 1px solid var(--vscode-panel-border, var(--vscode-widget-border));
+  position: relative;
+}
+.nl-bar .input { flex: 1; font-size: 11px; }
+.nl-bar.hidden { display: none; }
+.nl-mode-btn { font-size: 12px !important; }
+
+/* ── NL Autocomplete Dropdown ── */
+.nl-dropdown {
+  position: absolute; top: 100%; left: 0; right: 0; z-index: 50;
+  max-height: 150px; overflow-y: auto;
+  background: var(--vscode-menu-background, var(--vscode-editor-background));
+  border: 1px solid var(--vscode-menu-border, var(--vscode-widget-border));
+  border-top: none;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+}
+.nl-dropdown.hidden { display: none; }
+.nl-dropdown-item {
+  padding: 4px 8px; font-size: 11px; cursor: pointer;
+  display: flex; align-items: center;
+}
+.nl-dropdown-item:hover, .nl-dropdown-item.active {
+  background: var(--vscode-list-hoverBackground);
+}
+.nl-dropdown-hint {
+  font-size: 9px; opacity: 0.5; margin-left: 6px;
+}
+
+/* ── Impact Report ── */
+#impact-report {
+  flex-shrink: 0;
+}
+
+.impact-header {
+  display: flex; align-items: center; gap: 4px;
+  padding: 6px 10px; cursor: pointer; user-select: none;
+  border-top: 1px solid var(--vscode-panel-border, var(--vscode-widget-border));
+  border-bottom: 1px solid var(--vscode-panel-border, var(--vscode-widget-border));
+}
+.impact-header:hover { background: var(--vscode-list-hoverBackground); }
+
+.impact-badges { display: flex; gap: 4px; margin-left: auto; }
+.impact-badge {
+  font-size: 9px; padding: 1px 6px; border-radius: 8px;
+  font-weight: 600; white-space: nowrap;
+}
+.impact-badge.broken { background: rgba(241, 76, 76, 0.2); color: var(--vscode-charts-red, #f14c4c); }
+.impact-badge.affected { background: rgba(204, 167, 0, 0.2); color: var(--vscode-charts-yellow, #cca700); }
+.impact-badge.safe { background: rgba(137, 209, 133, 0.2); color: var(--vscode-charts-green, #89d185); }
+
+.impact-body { padding: 4px 0; max-height: 200px; overflow-y: auto; }
+
+.impact-item {
+  padding: 4px 10px; font-size: 11px;
+  border-left: 2px solid transparent;
+}
+.impact-item.broken { border-left-color: var(--vscode-charts-red, #f14c4c); }
+.impact-item.affected { border-left-color: var(--vscode-charts-yellow, #cca700); }
+.impact-item:hover { background: var(--vscode-list-hoverBackground); }
+
+.impact-item-header { display: flex; align-items: center; gap: 6px; }
+.impact-status-dot {
+  width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0;
+}
+.impact-status-dot.broken { background: var(--vscode-charts-red, #f14c4c); }
+.impact-status-dot.affected { background: var(--vscode-charts-yellow, #cca700); }
+.impact-status-dot.safe { background: var(--vscode-charts-green, #89d185); }
+
+.impact-name { font-weight: 500; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.impact-location { font-size: 10px; opacity: 0.5; flex-shrink: 0; }
+
+.impact-details { padding: 2px 0 2px 18px; }
+.impact-field-change { font-size: 10px; opacity: 0.8; padding: 1px 0; font-family: var(--vscode-editor-font-family, monospace); }
+.impact-arrow { color: var(--vscode-charts-green, #89d185); }
+.impact-change-type { opacity: 0.6; }
+
+/* ── Sidebar Toast ── */
+.sidebar-toast {
+  position: fixed; bottom: 8px; left: 50%; transform: translateX(-50%);
+  background: var(--vscode-notificationsInfoIcon-foreground, #3794ff);
+  color: #fff; padding: 4px 12px; border-radius: 4px;
+  font-size: 11px; z-index: 300; white-space: nowrap;
+  animation: sidebar-toast-fade 2.5s ease-in-out forwards;
+}
+@keyframes sidebar-toast-fade {
+  0% { opacity: 0; }
+  10% { opacity: 1; }
+  80% { opacity: 1; }
+  100% { opacity: 0; }
 }

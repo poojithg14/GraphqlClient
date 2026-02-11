@@ -77,7 +77,7 @@ async function extractPortHints(): Promise<number[]> {
   return ports;
 }
 
-async function probeEndpoint(url: string): Promise<boolean> {
+export async function probeEndpoint(url: string): Promise<boolean> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), PROBE_TIMEOUT);
 

@@ -17,8 +17,11 @@
     schemaLoading: false,
     schemaError: null,
     environments: null,
+    activeEnvFilter: 'local',
     collectionsVisible: true,
     schemaHeight: 200,
+    impactReport: null,
+    impactExpanded: true,
   };
 
   let contextMenu = null;
@@ -58,13 +61,15 @@
         saveState();
         renderTree();
         break;
-      case 'importedCollections':
-        state.collections = [...state.collections, ...msg.payload];
-        msg.payload.forEach(col => { state.expandedCollections[col.id] = true; });
+      case 'importedCollections': {
+        const imported = msg.payload;
+        state.collections = [...state.collections, ...imported];
+        imported.forEach(col => { state.expandedCollections[col.id] = true; });
         saveState();
         vscode.postMessage({ type: 'saveCollections', payload: state.collections });
         renderTree();
         break;
+      }
       case 'environmentsLoaded':
         state.environments = msg.payload;
         saveState();
@@ -104,6 +109,35 @@
           },
         });
         break;
+      case 'impactReportReady':
+      case 'impactReportLoaded':
+        state.impactReport = msg.payload;
+        saveState();
+        renderImpactReport();
+        break;
+      case 'autoHealComplete':
+        showToast('Healed ' + msg.payload.healed + ' of ' + msg.payload.total + ' queries');
+        vscode.postMessage({ type: 'loadCollections' });
+        break;
+      case 'nlResult':
+        if (msg.payload.query) {
+          var nlPayload = {
+            id: generateId('req'),
+            name: 'NL Generated',
+            type: msg.payload.query.trim().startsWith('mutation') ? 'mutation' : 'query',
+            query: msg.payload.query,
+            variables: msg.payload.variables || '{}',
+            headers: {},
+          };
+          if (msg.payload.returnTypeName !== undefined) nlPayload.returnTypeName = msg.payload.returnTypeName;
+          if (msg.payload.availableFields) nlPayload.availableFields = msg.payload.availableFields;
+          if (msg.payload.operationArgs) nlPayload.operationArgs = msg.payload.operationArgs;
+          vscode.postMessage({ type: 'openRequest', payload: nlPayload });
+        }
+        break;
+      case 'aiConfigLoaded':
+        // handled silently
+        break;
     }
   });
 
@@ -113,6 +147,7 @@
     vscode.postMessage({ type: 'loadCollections' });
     vscode.postMessage({ type: 'loadEnvironments' });
     vscode.postMessage({ type: 'loadSchema' });
+    vscode.postMessage({ type: 'loadImpactReport' });
   }
 
   function buildLayout() {
@@ -132,6 +167,7 @@
     });
     toolbar.appendChild(collapseBtn);
     toolbar.appendChild(el('span', { className: 'toolbar-title', textContent: 'Collections' }));
+
     const actions = el('div', { className: 'toolbar-actions' });
     actions.appendChild(el('button', {
       className: 'btn-icon', title: 'New Collection', textContent: '+',
@@ -158,9 +194,185 @@
     search.appendChild(searchInput);
     app.appendChild(search);
 
+    // NL Input bar
+    const nlBar = el('div', { className: 'nl-bar' + (state.collectionsVisible ? '' : ' hidden') });
+    const nlInput = el('input', {
+      className: 'input', type: 'text',
+      placeholder: 'Describe what you need...',
+    });
+
+    // Autocomplete dropdown
+    const nlDropdown = el('div', { className: 'nl-dropdown hidden' });
+    let nlActiveIndex = -1;
+    let nlBlurTimeout = null;
+    const NL_INTENTS = ['get', 'list', 'create', 'update', 'delete'];
+
+    function getNLEntityNames() {
+      if (!state.schema || !state.schema.types) return [];
+      var rootNames = [];
+      if (state.schema.queryType) rootNames.push(state.schema.queryType.name);
+      if (state.schema.mutationType) rootNames.push(state.schema.mutationType.name);
+      return Object.keys(state.schema.types).filter(function(n) {
+        return !n.startsWith('__') && rootNames.indexOf(n) === -1;
+      });
+    }
+
+    function renderNLDropdown(items) {
+      nlDropdown.innerHTML = '';
+      nlActiveIndex = -1;
+      if (items.length === 0) {
+        nlDropdown.classList.add('hidden');
+        return;
+      }
+      items.forEach(function(item, idx) {
+        var div = el('div', { className: 'nl-dropdown-item' });
+        div.appendChild(el('span', { textContent: item.label }));
+        if (item.hint) div.appendChild(el('span', { className: 'nl-dropdown-hint', textContent: item.hint }));
+        div.addEventListener('mousedown', function(e) {
+          e.preventDefault();
+          selectNLSuggestion(item);
+        });
+        nlDropdown.appendChild(div);
+      });
+      nlDropdown.classList.remove('hidden');
+    }
+
+    function selectNLSuggestion(item) {
+      var tokens = nlInput.value.split(/\s+/);
+      if (tokens.length <= 1) {
+        nlInput.value = item.label + ' ';
+      } else {
+        tokens[tokens.length - 1] = item.label;
+        nlInput.value = tokens.join(' ') + ' ';
+      }
+      nlInput.focus();
+      updateNLSuggestions();
+    }
+
+    function updateNLSuggestions() {
+      var val = nlInput.value;
+      var tokens = val.split(/\s+/).filter(function(t) { return t.length > 0; });
+      var items = [];
+
+      if (tokens.length === 0) {
+        // Empty input — show all intents
+        items = NL_INTENTS.map(function(intent) {
+          return { label: intent, hint: 'intent' };
+        });
+      } else if (tokens.length === 1) {
+        var partial = tokens[0].toLowerCase();
+        var matchedIntent = NL_INTENTS.indexOf(partial) >= 0;
+        if (matchedIntent) {
+          // Full intent typed — show entities
+          var entities = getNLEntityNames();
+          items = entities.slice(0, 20).map(function(name) {
+            return { label: name, hint: 'type' };
+          });
+        } else {
+          // Partial intent — filter intents
+          var filtered = NL_INTENTS.filter(function(i) { return i.startsWith(partial); });
+          if (filtered.length > 0) {
+            items = filtered.map(function(intent) {
+              return { label: intent, hint: 'intent' };
+            });
+          } else {
+            // Not matching any intent — show entities filtered
+            var entities = getNLEntityNames();
+            items = entities.filter(function(n) { return n.toLowerCase().startsWith(partial); }).slice(0, 20).map(function(name) {
+              return { label: name, hint: 'type' };
+            });
+          }
+        }
+      } else {
+        // Multiple tokens — if first token is a known intent, show entities filtered by second token
+        var firstToken = tokens[0].toLowerCase();
+        if (NL_INTENTS.indexOf(firstToken) >= 0) {
+          var partial = (tokens[tokens.length - 1] || '').toLowerCase();
+          var entities = getNLEntityNames();
+          items = entities.filter(function(n) { return n.toLowerCase().startsWith(partial); }).slice(0, 20).map(function(name) {
+            return { label: name, hint: 'type' };
+          });
+        }
+      }
+
+      renderNLDropdown(items);
+    }
+
+    function navigateNLDropdown(dir) {
+      var items = nlDropdown.querySelectorAll('.nl-dropdown-item');
+      if (items.length === 0) return;
+      if (nlActiveIndex >= 0 && nlActiveIndex < items.length) items[nlActiveIndex].classList.remove('active');
+      nlActiveIndex += dir;
+      if (nlActiveIndex < 0) nlActiveIndex = items.length - 1;
+      if (nlActiveIndex >= items.length) nlActiveIndex = 0;
+      items[nlActiveIndex].classList.add('active');
+      items[nlActiveIndex].scrollIntoView({ block: 'nearest' });
+    }
+
+    nlInput.addEventListener('input', updateNLSuggestions);
+    nlInput.addEventListener('focus', updateNLSuggestions);
+    nlInput.addEventListener('blur', function() {
+      nlBlurTimeout = setTimeout(function() { nlDropdown.classList.add('hidden'); }, 150);
+    });
+
+    nlInput.addEventListener('keydown', function(e) {
+      var dropdownVisible = !nlDropdown.classList.contains('hidden');
+      if (e.key === 'ArrowDown' && dropdownVisible) {
+        e.preventDefault();
+        navigateNLDropdown(1);
+        return;
+      }
+      if (e.key === 'ArrowUp' && dropdownVisible) {
+        e.preventDefault();
+        navigateNLDropdown(-1);
+        return;
+      }
+      if (e.key === 'Escape' && dropdownVisible) {
+        e.preventDefault();
+        nlDropdown.classList.add('hidden');
+        return;
+      }
+      if (e.key === 'Enter') {
+        if (dropdownVisible && nlActiveIndex >= 0) {
+          e.preventDefault();
+          var items = nlDropdown.querySelectorAll('.nl-dropdown-item');
+          if (items[nlActiveIndex]) {
+            items[nlActiveIndex].dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+          }
+          return;
+        }
+        if (nlInput.value.trim()) {
+          nlDropdown.classList.add('hidden');
+          vscode.postMessage({ type: 'nlToGraphql', payload: { input: nlInput.value.trim(), mode: 'rule' } });
+          nlInput.value = '';
+        }
+      }
+    });
+
+    nlBar.appendChild(nlInput);
+    nlBar.appendChild(nlDropdown);
+    const nlSubmitBtn = el('button', {
+      className: 'btn-icon nl-mode-btn',
+      title: 'Generate',
+      textContent: '\u26A1',
+      onClick: function() {
+        if (nlInput.value.trim()) {
+          nlDropdown.classList.add('hidden');
+          vscode.postMessage({ type: 'nlToGraphql', payload: { input: nlInput.value.trim(), mode: 'rule' } });
+          nlInput.value = '';
+        }
+      },
+    });
+    nlBar.appendChild(nlSubmitBtn);
+    app.appendChild(nlBar);
+
     // Tree container
     const tree = el('div', { className: 'tree' + (state.collectionsVisible ? '' : ' hidden'), id: 'tree' });
     app.appendChild(tree);
+
+    // Impact Report section
+    const impactEl = el('div', { id: 'impact-report' });
+    app.appendChild(impactEl);
 
     // Resize handle (only visible when collections are visible)
     if (state.collectionsVisible) {
@@ -180,6 +392,7 @@
     app.appendChild(schemaEl);
 
     renderTree();
+    renderImpactReport();
     renderSchemaExplorer();
   }
 
@@ -294,8 +507,9 @@
   }
 
   function filterCollections(collections, query) {
-    if (!query) return collections;
-    return collections.map(col => ({
+    let filtered = collections;
+    if (!query) return filtered;
+    return filtered.map(col => ({
       ...col,
       folders: col.folders.map(f => ({
         ...f,
@@ -467,10 +681,12 @@
   }
 
   function showNewCollectionDialog() {
-    showModal('New Collection', 'Create a new GraphQL collection', [
+    const fields = [
       { id: 'name', label: 'Collection Name', placeholder: 'e.g. My API' },
       { id: 'folderName', label: 'Initial Folder (optional)', placeholder: 'e.g. Users' },
-    ], values => {
+    ];
+
+    showModal('New Collection', 'Create a new GraphQL collection', fields, values => {
       if (!values.name) return;
       const folders = [];
       if (values.folderName) folders.push({ id: generateId('folder'), name: values.folderName, requests: [] });
@@ -686,23 +902,39 @@
     return env || null;
   }
 
-  function triggerIntrospect() {
+  function getActiveEndpoint() {
     const env = getActiveEnvironment();
-    if (!env) {
-      state.schemaError = 'No active environment configured';
+    return env ? env.endpoint : '';
+  }
+
+  function triggerIntrospect(endpointOverride) {
+    const env = getActiveEnvironment();
+    const endpoint = endpointOverride || (env ? env.endpoint : '');
+
+    if (!endpoint) {
+      // Show inline endpoint input instead of error
+      state.schemaError = null;
+      state.showEndpointInput = true;
       saveState();
       renderSchemaExplorer();
       return;
     }
-    if (!env.endpoint) {
-      state.schemaError = 'No endpoint configured. Set an endpoint URL in the editor first.';
-      saveState();
-      renderSchemaExplorer();
-      return;
+
+    // If user entered an endpoint, save it to the active environment
+    if (endpointOverride && env) {
+      env.endpoint = endpointOverride;
+      if (!env.headers) env.headers = {};
+      if (!env.headers['Content-Type']) env.headers['Content-Type'] = 'application/json';
+      vscode.postMessage({ type: 'saveEnvironments', payload: state.environments });
     }
+
+    state.showEndpointInput = false;
+    saveState();
+
+    const headers = env ? (env.headers || {}) : {};
     vscode.postMessage({
       type: 'introspectSchema',
-      payload: { endpoint: env.endpoint, headers: env.headers || {} },
+      payload: { endpoint, headers },
     });
   }
 
@@ -760,6 +992,36 @@
     // Error state
     if (state.schemaError) {
       container.appendChild(el('div', { className: 'schema-error', textContent: state.schemaError }));
+    }
+
+    // Endpoint input state (shown when no endpoint configured)
+    if (state.showEndpointInput || (!state.schema && !getActiveEndpoint())) {
+      const inputWrap = el('div', { className: 'schema-empty' });
+      inputWrap.appendChild(el('div', { textContent: 'Enter a GraphQL endpoint to get started' }));
+      const endpointInput = el('input', {
+        className: 'input', type: 'text',
+        placeholder: 'e.g. http://localhost:4000/graphql',
+        style: { width: '100%', marginTop: '6px' },
+      });
+      endpointInput.addEventListener('keydown', function(e) {
+        if (e.key === 'Enter' && endpointInput.value.trim()) {
+          triggerIntrospect(endpointInput.value.trim());
+        }
+      });
+      inputWrap.appendChild(endpointInput);
+      inputWrap.appendChild(el('button', {
+        className: 'btn btn-primary schema-introspect-btn',
+        textContent: 'Introspect',
+        style: { marginTop: '6px' },
+        onClick: function() {
+          if (endpointInput.value.trim()) {
+            triggerIntrospect(endpointInput.value.trim());
+          }
+        },
+      }));
+      container.appendChild(inputWrap);
+      setTimeout(function() { endpointInput.focus(); }, 50);
+      return;
     }
 
     // Empty state
@@ -845,6 +1107,126 @@
       line = line.replace(/\b(\d+(?:\.\d+)?)(?![^<]*>)\b/g, '<span class="syn-number">$1</span>');
       return line;
     }).join('\n');
+  }
+
+  // ── Impact Report ──
+  function renderImpactReport() {
+    var container = $('#impact-report');
+    if (!container) return;
+    container.innerHTML = '';
+
+    if (!state.impactReport) return;
+
+    var report = state.impactReport;
+
+    // Header
+    var header = el('div', {
+      className: 'impact-header',
+      onClick: function() { state.impactExpanded = !state.impactExpanded; saveState(); renderImpactReport(); },
+    });
+    header.appendChild(el('span', { className: 'tree-icon', textContent: state.impactExpanded ? '\u25BE' : '\u25B8' }));
+    header.appendChild(el('span', { className: 'toolbar-title', textContent: 'Impact Analysis' }));
+
+    // Summary badges
+    var badges = el('div', { className: 'impact-badges' });
+    if (report.brokenCount > 0) badges.appendChild(el('span', { className: 'impact-badge broken', textContent: report.brokenCount + ' broken' }));
+    if (report.affectedCount > 0) badges.appendChild(el('span', { className: 'impact-badge affected', textContent: report.affectedCount + ' affected' }));
+    badges.appendChild(el('span', { className: 'impact-badge safe', textContent: report.safeCount + ' safe' }));
+    header.appendChild(badges);
+
+    // Fix All button
+    var fixableEntries = report.entries.filter(function(e) { return e.autoFixAvailable; });
+    if (fixableEntries.length > 0) {
+      header.appendChild(el('button', {
+        className: 'btn-icon', title: 'Fix All', textContent: '\u2692',
+        onClick: function(e) {
+          e.stopPropagation();
+          var healEntries = fixableEntries.map(function(entry) {
+            var fixes = [];
+            entry.brokenFields.forEach(function(f) {
+              if (f.changeType === 'renamed' && f.suggestedReplacement && f.confidence > 0.7) {
+                fixes.push({ oldField: f.fieldName, newField: f.suggestedReplacement, lineNumber: 0 });
+              }
+            });
+            return { requestId: entry.requestId, collectionId: '', folderId: '', fixes: fixes };
+          });
+          vscode.postMessage({ type: 'autoHealAll', payload: { entries: healEntries } });
+        },
+      }));
+    }
+
+    container.appendChild(header);
+
+    if (!state.impactExpanded) return;
+
+    // Entries
+    var body = el('div', { className: 'impact-body' });
+    report.entries.forEach(function(entry) {
+      if (entry.status === 'safe') return; // Only show broken/affected
+
+      var item = el('div', { className: 'impact-item ' + entry.status });
+      var nameRow = el('div', { className: 'impact-item-header' });
+      nameRow.appendChild(el('span', { className: 'impact-status-dot ' + entry.status }));
+      nameRow.appendChild(el('span', { className: 'impact-name', textContent: entry.requestName }));
+      nameRow.appendChild(el('span', { className: 'impact-location', textContent: entry.collectionName + ' / ' + entry.folderName }));
+
+      // Per-entry fix button
+      if (entry.autoFixAvailable) {
+        nameRow.appendChild(el('button', {
+          className: 'btn-icon', title: 'Apply Fix', textContent: '\u2692',
+          onClick: function(e) {
+            e.stopPropagation();
+            var fixes = [];
+            entry.brokenFields.forEach(function(f) {
+              if (f.changeType === 'renamed' && f.suggestedReplacement && f.confidence > 0.7) {
+                fixes.push({ oldField: f.fieldName, newField: f.suggestedReplacement, lineNumber: 0 });
+              }
+            });
+            vscode.postMessage({
+              type: 'autoHealQuery',
+              payload: { requestId: entry.requestId, collectionId: '', folderId: '', fixes: fixes },
+            });
+          },
+        }));
+      }
+
+      item.appendChild(nameRow);
+
+      // Broken fields detail
+      if (entry.brokenFields.length > 0) {
+        var details = el('div', { className: 'impact-details' });
+        entry.brokenFields.forEach(function(f) {
+          var detail = el('div', { className: 'impact-field-change' });
+          detail.appendChild(el('span', { textContent: f.typeName + '.' + f.fieldName }));
+          if (f.changeType === 'renamed' && f.suggestedReplacement) {
+            detail.appendChild(el('span', { className: 'impact-arrow', textContent: ' \u2192 ' + f.suggestedReplacement }));
+          } else {
+            detail.appendChild(el('span', { className: 'impact-change-type', textContent: ' (' + f.changeType + ')' }));
+          }
+          details.appendChild(detail);
+        });
+        item.appendChild(details);
+      }
+
+      body.appendChild(item);
+    });
+
+    // Summary
+    body.appendChild(el('div', {
+      className: 'schema-fetched-at',
+      textContent: 'Analyzed ' + new Date(report.timestamp).toLocaleString(),
+    }));
+
+    container.appendChild(body);
+  }
+
+  // ── Toast ──
+  function showToast(message) {
+    var existing = document.querySelector('.sidebar-toast');
+    if (existing) existing.remove();
+    var toast = el('div', { className: 'sidebar-toast', textContent: message });
+    document.body.appendChild(toast);
+    setTimeout(function() { toast.remove(); }, 2500);
   }
 
   init();

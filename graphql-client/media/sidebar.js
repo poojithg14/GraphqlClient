@@ -22,6 +22,7 @@
     schemaHeight: 200,
     impactReport: null,
     impactExpanded: true,
+    schemaSearch: '',
   };
 
   let contextMenu = null;
@@ -106,6 +107,7 @@
             returnTypeName: msg.payload.returnTypeName,
             availableFields: msg.payload.availableFields,
             operationArgs: msg.payload.operationArgs,
+            source: 'schema-explorer',
           },
         });
         break;
@@ -120,6 +122,9 @@
         vscode.postMessage({ type: 'loadCollections' });
         break;
       case 'nlResult':
+        if (msg.payload.warning) {
+          showToast(msg.payload.warning);
+        }
         if (msg.payload.query) {
           var nlPayload = {
             id: generateId('req'),
@@ -129,6 +134,7 @@
             variables: msg.payload.variables || '{}',
             headers: {},
           };
+          nlPayload.source = 'nl-input';
           if (msg.payload.returnTypeName !== undefined) nlPayload.returnTypeName = msg.payload.returnTypeName;
           if (msg.payload.availableFields) nlPayload.availableFields = msg.payload.availableFields;
           if (msg.payload.operationArgs) nlPayload.operationArgs = msg.payload.operationArgs;
@@ -137,6 +143,12 @@
         break;
       case 'aiConfigLoaded':
         // handled silently
+        break;
+      case 'predictedImpactReady':
+        renderPredictedImpact(msg.payload);
+        break;
+      case 'sdlParseError':
+        showSchemaPreviewError(msg.payload.error);
         break;
     }
   });
@@ -207,14 +219,45 @@
     let nlBlurTimeout = null;
     const NL_INTENTS = ['get', 'list', 'create', 'update', 'delete'];
 
-    function getNLEntityNames() {
-      if (!state.schema || !state.schema.types) return [];
-      var rootNames = [];
-      if (state.schema.queryType) rootNames.push(state.schema.queryType.name);
-      if (state.schema.mutationType) rootNames.push(state.schema.mutationType.name);
-      return Object.keys(state.schema.types).filter(function(n) {
-        return !n.startsWith('__') && rootNames.indexOf(n) === -1;
-      });
+    function getNLRootFields(intent) {
+      if (!state.schema) return [];
+      var items = [];
+
+      // Determine which root types to include based on intent
+      var showQueries = !intent || intent === 'list' || intent === 'get' || intent === 'unknown';
+      var showMutations = !intent || intent === 'create' || intent === 'update' || intent === 'delete';
+
+      if (showQueries && state.schema.queryType && state.schema.queryType.fields) {
+        state.schema.queryType.fields.forEach(function(f) {
+          items.push({ label: f.name, hint: f.type ? f.type.name || '' : '', group: 'Queries' });
+        });
+      }
+
+      if (showMutations && state.schema.mutationType && state.schema.mutationType.fields) {
+        var mutationFields = state.schema.mutationType.fields;
+        // Filter mutations by intent prefix patterns
+        if (intent === 'create') {
+          mutationFields = mutationFields.filter(function(f) {
+            var lower = f.name.toLowerCase();
+            return lower.startsWith('create') || lower.startsWith('add') || lower.startsWith('new');
+          });
+        } else if (intent === 'update') {
+          mutationFields = mutationFields.filter(function(f) {
+            var lower = f.name.toLowerCase();
+            return lower.startsWith('update') || lower.startsWith('edit') || lower.startsWith('modify');
+          });
+        } else if (intent === 'delete') {
+          mutationFields = mutationFields.filter(function(f) {
+            var lower = f.name.toLowerCase();
+            return lower.startsWith('delete') || lower.startsWith('remove');
+          });
+        }
+        mutationFields.forEach(function(f) {
+          items.push({ label: f.name, hint: f.type ? f.type.name || '' : '', group: 'Mutations' });
+        });
+      }
+
+      return items;
     }
 
     function renderNLDropdown(items) {
@@ -224,7 +267,13 @@
         nlDropdown.classList.add('hidden');
         return;
       }
+      var lastGroup = null;
       items.forEach(function(item, idx) {
+        // Insert group header when group changes
+        if (item.group && item.group !== lastGroup) {
+          lastGroup = item.group;
+          nlDropdown.appendChild(el('div', { className: 'nl-dropdown-group', textContent: item.group }));
+        }
         var div = el('div', { className: 'nl-dropdown-item' });
         div.appendChild(el('span', { textContent: item.label }));
         if (item.hint) div.appendChild(el('span', { className: 'nl-dropdown-hint', textContent: item.hint }));
@@ -263,11 +312,8 @@
         var partial = tokens[0].toLowerCase();
         var matchedIntent = NL_INTENTS.indexOf(partial) >= 0;
         if (matchedIntent) {
-          // Full intent typed — show entities
-          var entities = getNLEntityNames();
-          items = entities.slice(0, 20).map(function(name) {
-            return { label: name, hint: 'type' };
-          });
+          // Full intent typed — show root fields filtered by intent
+          items = getNLRootFields(partial).slice(0, 20);
         } else {
           // Partial intent — filter intents
           var filtered = NL_INTENTS.filter(function(i) { return i.startsWith(partial); });
@@ -276,22 +322,37 @@
               return { label: intent, hint: 'intent' };
             });
           } else {
-            // Not matching any intent — show entities filtered
-            var entities = getNLEntityNames();
-            items = entities.filter(function(n) { return n.toLowerCase().startsWith(partial); }).slice(0, 20).map(function(name) {
-              return { label: name, hint: 'type' };
-            });
+            // Not matching any intent — show root fields filtered by partial
+            var fields = getNLRootFields(null);
+            var stripped = partial.endsWith('s') ? partial.slice(0, -1) : null;
+            items = fields.filter(function(f) {
+              var lower = f.label.toLowerCase();
+              return lower.startsWith(partial) || lower.includes(partial) || (stripped && (lower.startsWith(stripped) || lower.includes(stripped)));
+            }).slice(0, 20);
           }
         }
       } else {
-        // Multiple tokens — if first token is a known intent, show entities filtered by second token
+        // Multiple tokens — if first token is a known intent, show root fields filtered by last token
         var firstToken = tokens[0].toLowerCase();
         if (NL_INTENTS.indexOf(firstToken) >= 0) {
           var partial = (tokens[tokens.length - 1] || '').toLowerCase();
-          var entities = getNLEntityNames();
-          items = entities.filter(function(n) { return n.toLowerCase().startsWith(partial); }).slice(0, 20).map(function(name) {
-            return { label: name, hint: 'type' };
-          });
+          var fields = getNLRootFields(firstToken);
+          // Skip connecting words for matching
+          if (NL_CONNECTING_WORDS.indexOf(partial) >= 0) {
+            items = fields.slice(0, 20);
+          } else {
+            var stripped = partial.endsWith('s') ? partial.slice(0, -1) : null;
+            items = fields.filter(function(f) {
+              var lower = f.label.toLowerCase();
+              return lower.startsWith(partial) || lower.includes(partial) || (stripped && (lower.startsWith(stripped) || lower.includes(stripped)));
+            }).slice(0, 20);
+          }
+          // If already selected a valid field (exact match), hide dropdown
+          if (tokens.length >= 2) {
+            var fieldToken = tokens[tokens.length - 1].toLowerCase();
+            var exactMatch = fields.some(function(f) { return f.label.toLowerCase() === fieldToken; });
+            if (exactMatch) items = [];
+          }
         }
       }
 
@@ -343,7 +404,8 @@
         }
         if (nlInput.value.trim()) {
           nlDropdown.classList.add('hidden');
-          vscode.postMessage({ type: 'nlToGraphql', payload: { input: nlInput.value.trim(), mode: 'rule' } });
+          var nlText = stripConnectingWords(nlInput.value.trim());
+          vscode.postMessage({ type: 'nlToGraphql', payload: { input: nlText, mode: 'rule' } });
           nlInput.value = '';
         }
       }
@@ -358,7 +420,8 @@
       onClick: function() {
         if (nlInput.value.trim()) {
           nlDropdown.classList.add('hidden');
-          vscode.postMessage({ type: 'nlToGraphql', payload: { input: nlInput.value.trim(), mode: 'rule' } });
+          var nlText = stripConnectingWords(nlInput.value.trim());
+          vscode.postMessage({ type: 'nlToGraphql', payload: { input: nlText, mode: 'rule' } });
           nlInput.value = '';
         }
       },
@@ -969,6 +1032,14 @@
         buildLayout();
       },
     }));
+    if (state.schema) {
+      actions.appendChild(el('button', {
+        className: 'btn-icon',
+        title: 'Preview Schema Change',
+        textContent: '\u0394',
+        onClick: e => { e.stopPropagation(); showSchemaPreviewModal(); },
+      }));
+    }
     actions.appendChild(el('button', {
       className: 'btn-icon',
       title: 'Introspect Schema',
@@ -979,6 +1050,30 @@
     container.appendChild(toolbar);
 
     if (!state.schemaExpanded) return;
+
+    // Schema search input (shown when schema is loaded)
+    if (state.schema) {
+      var searchWrap = el('div', { className: 'schema-search' });
+      var schemaSearchInput = el('input', {
+        className: 'input schema-search-input', type: 'text',
+        placeholder: 'Filter schemas...',
+        value: state.schemaSearch || '',
+        onInput: function(e) {
+          state.schemaSearch = e.target.value;
+          var cursorPos = e.target.selectionStart;
+          saveState();
+          renderSchemaExplorer();
+          // Restore focus after re-render
+          var restored = document.querySelector('.schema-search-input');
+          if (restored) {
+            restored.focus();
+            restored.selectionStart = restored.selectionEnd = cursorPos;
+          }
+        },
+      });
+      searchWrap.appendChild(schemaSearchInput);
+      container.appendChild(searchWrap);
+    }
 
     // Loading state
     if (state.schemaLoading) {
@@ -1059,18 +1154,23 @@
   }
 
   function renderSchemaSection(container, title, fields, operationType, expandKey) {
+    var searchFilter = (state.schemaSearch || '').toLowerCase();
+    var filteredFields = searchFilter
+      ? fields.filter(function(f) { return f.name.toLowerCase().includes(searchFilter); })
+      : fields;
+
     const expanded = state[expandKey] !== false;
     const header = el('div', {
       className: 'schema-section-header',
       onClick: () => { state[expandKey] = !expanded; saveState(); renderSchemaExplorer(); },
     });
     header.appendChild(el('span', { className: 'tree-icon', textContent: expanded ? '▾' : '▸' }));
-    header.appendChild(el('span', { textContent: title + ' (' + fields.length + ')' }));
+    header.appendChild(el('span', { textContent: title + ' (' + filteredFields.length + ')' }));
     container.appendChild(header);
 
     if (!expanded) return;
 
-    fields.forEach(field => {
+    filteredFields.forEach(field => {
       const item = el('div', {
         className: 'schema-field-item',
         onClick: () => {
@@ -1146,6 +1246,8 @@
             entry.brokenFields.forEach(function(f) {
               if (f.changeType === 'renamed' && f.suggestedReplacement && f.confidence > 0.7) {
                 fixes.push({ oldField: f.fieldName, newField: f.suggestedReplacement, lineNumber: 0 });
+              } else if (f.changeType === 'removed') {
+                fixes.push({ oldField: f.fieldName, newField: '', lineNumber: 0 });
               }
             });
             return { requestId: entry.requestId, collectionId: '', folderId: '', fixes: fixes };
@@ -1164,7 +1266,31 @@
     report.entries.forEach(function(entry) {
       if (entry.status === 'safe') return; // Only show broken/affected
 
-      var item = el('div', { className: 'impact-item ' + entry.status });
+      var item = el('div', {
+        className: 'impact-item ' + entry.status,
+        style: { cursor: 'pointer' },
+        onClick: (function(entryRef) {
+          return function() {
+            // Find the matching request in collections and open it
+            for (var ci = 0; ci < state.collections.length; ci++) {
+              var col = state.collections[ci];
+              for (var fi = 0; fi < col.folders.length; fi++) {
+                var folder = col.folders[fi];
+                for (var ri = 0; ri < folder.requests.length; ri++) {
+                  var req = folder.requests[ri];
+                  if (req.id === entryRef.requestId) {
+                    state.selectedRequestId = req.id;
+                    saveState();
+                    renderTree();
+                    vscode.postMessage({ type: 'openRequest', payload: req });
+                    return;
+                  }
+                }
+              }
+            }
+          };
+        })(entry),
+      });
       var nameRow = el('div', { className: 'impact-item-header' });
       nameRow.appendChild(el('span', { className: 'impact-status-dot ' + entry.status }));
       nameRow.appendChild(el('span', { className: 'impact-name', textContent: entry.requestName }));
@@ -1180,6 +1306,8 @@
             entry.brokenFields.forEach(function(f) {
               if (f.changeType === 'renamed' && f.suggestedReplacement && f.confidence > 0.7) {
                 fixes.push({ oldField: f.fieldName, newField: f.suggestedReplacement, lineNumber: 0 });
+              } else if (f.changeType === 'removed') {
+                fixes.push({ oldField: f.fieldName, newField: '', lineNumber: 0 });
               }
             });
             vscode.postMessage({
@@ -1218,6 +1346,130 @@
     }));
 
     container.appendChild(body);
+  }
+
+  // ── Schema Preview Modal (Feature B) ──
+  var schemaPreviewOverlay = null;
+
+  function showSchemaPreviewModal() {
+    if (schemaPreviewOverlay) schemaPreviewOverlay.remove();
+
+    var overlay = el('div', { className: 'modal-overlay' });
+    var modal = el('div', { className: 'modal schema-preview-modal' });
+    modal.appendChild(el('div', { className: 'modal-title', textContent: 'Preview Schema Change' }));
+    modal.appendChild(el('div', { className: 'modal-desc', textContent: 'Paste a new schema (SDL or JSON introspection) to see predicted impact on your queries.' }));
+
+    var textarea = el('textarea', {
+      className: 'input schema-preview-textarea',
+      placeholder: 'type Query {\n  users: [User!]!\n}\n\ntype User {\n  id: ID!\n  name: String!\n}\n\n— or paste JSON introspection result —',
+    });
+    modal.appendChild(textarea);
+
+    var resultContainer = el('div', { id: 'schema-preview-result' });
+    modal.appendChild(resultContainer);
+
+    var actions = el('div', { className: 'modal-actions' });
+    actions.appendChild(el('button', { className: 'btn btn-secondary', textContent: 'Close', onClick: function() { overlay.remove(); schemaPreviewOverlay = null; } }));
+    actions.appendChild(el('button', {
+      className: 'btn btn-primary', textContent: 'Analyze Impact',
+      onClick: function() {
+        var text = textarea.value.trim();
+        if (!text) return;
+        resultContainer.innerHTML = '';
+        resultContainer.appendChild(el('div', { className: 'schema-status', textContent: 'Analyzing...' }));
+        vscode.postMessage({ type: 'previewSchemaImpact', payload: { schemaText: text } });
+      },
+    }));
+    modal.appendChild(actions);
+    overlay.appendChild(modal);
+    overlay.addEventListener('click', function(e) { if (e.target === overlay) { overlay.remove(); schemaPreviewOverlay = null; } });
+    document.body.appendChild(overlay);
+    schemaPreviewOverlay = overlay;
+    setTimeout(function() { textarea.focus(); }, 50);
+  }
+
+  function renderPredictedImpact(report) {
+    var container = schemaPreviewOverlay ? schemaPreviewOverlay.querySelector('#schema-preview-result') : null;
+    if (!container) return;
+    container.innerHTML = '';
+
+    // Summary badges
+    var badges = el('div', { className: 'impact-badges', style: { marginBottom: '8px', marginTop: '8px' } });
+    badges.appendChild(el('span', { className: 'impact-badge', textContent: 'Predicted Impact', style: { background: 'rgba(55,148,255,0.2)', color: '#3794ff' } }));
+    if (report.brokenCount > 0) badges.appendChild(el('span', { className: 'impact-badge broken', textContent: report.brokenCount + ' broken' }));
+    if (report.affectedCount > 0) badges.appendChild(el('span', { className: 'impact-badge affected', textContent: report.affectedCount + ' affected' }));
+    badges.appendChild(el('span', { className: 'impact-badge safe', textContent: report.safeCount + ' safe' }));
+    container.appendChild(badges);
+
+    // Diff summary
+    if (report.diff) {
+      container.appendChild(el('div', { className: 'schema-fetched-at', textContent: report.diff.summary }));
+    }
+
+    // Entries
+    report.entries.forEach(function(entry) {
+      if (entry.status === 'safe') return;
+      var item = el('div', { className: 'impact-item ' + entry.status });
+      var nameRow = el('div', { className: 'impact-item-header' });
+      nameRow.appendChild(el('span', { className: 'impact-status-dot ' + entry.status }));
+      nameRow.appendChild(el('span', { className: 'impact-name', textContent: entry.requestName }));
+      nameRow.appendChild(el('span', { className: 'impact-location', textContent: entry.collectionName + ' / ' + entry.folderName }));
+      item.appendChild(nameRow);
+
+      if (entry.brokenFields.length > 0) {
+        var details = el('div', { className: 'impact-details' });
+        entry.brokenFields.forEach(function(f) {
+          var detail = el('div', { className: 'impact-field-change' });
+          detail.appendChild(el('span', { textContent: f.typeName + '.' + f.fieldName }));
+          if (f.changeType === 'renamed' && f.suggestedReplacement) {
+            detail.appendChild(el('span', { className: 'impact-arrow', textContent: ' \u2192 ' + f.suggestedReplacement }));
+          } else {
+            detail.appendChild(el('span', { className: 'impact-change-type', textContent: ' (' + f.changeType + ')' }));
+          }
+          details.appendChild(detail);
+        });
+        item.appendChild(details);
+      }
+      container.appendChild(item);
+    });
+
+    // Pre-heal button
+    var fixableEntries = report.entries.filter(function(e) { return e.autoFixAvailable; });
+    if (fixableEntries.length > 0) {
+      container.appendChild(el('button', {
+        className: 'btn btn-primary', textContent: 'Pre-Heal All (' + fixableEntries.length + ')',
+        style: { marginTop: '8px' },
+        onClick: function() {
+          var healEntries = fixableEntries.map(function(entry) {
+            var fixes = [];
+            entry.brokenFields.forEach(function(f) {
+              if (f.changeType === 'renamed' && f.suggestedReplacement && f.confidence > 0.7) {
+                fixes.push({ oldField: f.fieldName, newField: f.suggestedReplacement, lineNumber: 0 });
+              } else if (f.changeType === 'removed') {
+                fixes.push({ oldField: f.fieldName, newField: '', lineNumber: 0 });
+              }
+            });
+            return { requestId: entry.requestId, collectionId: '', folderId: '', fixes: fixes };
+          });
+          vscode.postMessage({ type: 'preHealAll', payload: { entries: healEntries } });
+        },
+      }));
+    }
+  }
+
+  function showSchemaPreviewError(error) {
+    var container = schemaPreviewOverlay ? schemaPreviewOverlay.querySelector('#schema-preview-result') : null;
+    if (!container) return;
+    container.innerHTML = '';
+    container.appendChild(el('div', { className: 'schema-error', textContent: error }));
+  }
+
+  // ── NL Helpers ──
+  var NL_CONNECTING_WORDS = ['of', 'all', 'the', 'a', 'an', 'some', 'my'];
+  function stripConnectingWords(text) {
+    return text.split(/\s+/).filter(function(w) {
+      return NL_CONNECTING_WORDS.indexOf(w.toLowerCase()) === -1;
+    }).join(' ');
   }
 
   // ── Toast ──

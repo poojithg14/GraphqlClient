@@ -2,8 +2,11 @@ import * as vscode from 'vscode';
 import { StorageService } from './storage';
 import { executeGraphQLQuery } from './graphqlExecutor';
 import { calculateQueryCost } from './queryCostCalculator';
+import { analyzeQuerySecurity } from './querySecurityAnalyzer';
+import { updatePerformanceStats, detectAnomaly } from './performanceTracker';
 import { parseNaturalLanguage, generateFromNL, callAIProvider, generateResolverStub } from './nlToGraphql';
-import type { GraphQLRequest } from './types';
+import { generateOperationString } from './schemaIntrospector';
+import type { GraphQLRequest, ProvenanceEntry } from './types';
 
 interface DirtyTab {
   id: string;
@@ -24,11 +27,47 @@ export class EditorPanelManager {
   ) {}
 
   openRequest(request: GraphQLRequest | { id: string; name: string; type: string; query: string; variables: string; headers: Record<string, string> }): void {
+    const enriched = this.enrichRequestWithSchema(request);
     if (this.panel) {
       this.panel.reveal(vscode.ViewColumn.One);
-      this.panel.webview.postMessage({ type: 'openRequest', payload: request });
+      this.panel.webview.postMessage({ type: 'openRequest', payload: enriched });
     } else {
-      this.createPanel(request);
+      this.createPanel(enriched);
+    }
+  }
+
+  /** Add returnTypeName, availableFields, operationArgs from schema if missing */
+  private enrichRequestWithSchema(
+    request: GraphQLRequest | { id: string; name: string; type: string; query: string; variables: string; headers: Record<string, string> },
+  ): typeof request & Record<string, unknown> {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const req = request as any;
+    // Skip if already enriched
+    if (req.availableFields && req.availableFields.length > 0) {
+      return req;
+    }
+    const schema = this.storage.loadSchema();
+    if (!schema) return req;
+
+    const query = String(req.query || '');
+    // Extract operation type and root field name from query text
+    const opMatch = query.match(/^\s*(query|mutation|subscription)\s+\w*\s*(?:\([^)]*\))?\s*\{\s*(\w+)/m);
+    if (!opMatch) return req;
+
+    const opType = opMatch[1];
+    const fieldName = opMatch[2];
+    if (opType !== 'query' && opType !== 'mutation') return req;
+
+    try {
+      const generated = generateOperationString(schema, opType, fieldName);
+      return {
+        ...req,
+        returnTypeName: generated.returnTypeName,
+        availableFields: generated.availableFields,
+        operationArgs: generated.operationArgs,
+      };
+    } catch {
+      return req;
     }
   }
 
@@ -237,6 +276,44 @@ export class EditorPanelManager {
           this.storage.saveSharedHeaders(message.payload);
           break;
 
+        case 'analyzeQuerySecurity': {
+          const schema = this.storage.loadSchema();
+          const result = analyzeQuerySecurity(message.payload.query, schema);
+          webview.postMessage({ type: 'securityResult', payload: result });
+          break;
+        }
+
+        case 'loadProvenance': {
+          const prov = this.storage.loadProvenance(message.payload.requestId);
+          if (prov) {
+            webview.postMessage({ type: 'provenanceLoaded', payload: prov });
+          } else {
+            webview.postMessage({ type: 'provenanceLoaded', payload: { requestId: message.payload.requestId, entries: [] } });
+          }
+          break;
+        }
+
+        case 'addProvenanceEntry': {
+          const { requestId, entry } = message.payload;
+          let provenance = this.storage.loadProvenance(requestId);
+          if (!provenance) {
+            provenance = { requestId, entries: [] };
+          }
+          provenance.entries.push(entry);
+          // Cap at 100 entries
+          if (provenance.entries.length > 100) {
+            provenance.entries = provenance.entries.slice(-100);
+          }
+          this.storage.saveProvenance(requestId, provenance);
+          break;
+        }
+
+        case 'loadPerformanceStats': {
+          const stats = this.storage.loadPerformanceStats(message.payload.requestId);
+          webview.postMessage({ type: 'performanceStatsLoaded', payload: stats ?? null });
+          break;
+        }
+
       }
     });
   }
@@ -301,7 +378,7 @@ export class EditorPanelManager {
       } else {
         const parsed = parseNaturalLanguage(payload.input, schema);
         const result = generateFromNL(parsed, schema);
-        webview.postMessage({ type: 'nlResult', payload: { query: result.query, variables: result.variables, returnTypeName: result.returnTypeName, availableFields: result.availableFields, operationArgs: result.operationArgs } });
+        webview.postMessage({ type: 'nlResult', payload: { query: result.query, variables: result.variables, returnTypeName: result.returnTypeName, availableFields: result.availableFields, operationArgs: result.operationArgs, warning: result.warning } });
       }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -327,7 +404,7 @@ export class EditorPanelManager {
 
   private async handleExecuteQuery(
     webview: vscode.Webview,
-    payload: { query: string; variables: string; headers: Record<string, string>; endpoint: string },
+    payload: { query: string; variables: string; headers: Record<string, string>; endpoint: string; requestId?: string },
   ): Promise<void> {
     try {
       const endpoint = await this.storage.resolveSecretsInText(payload.endpoint);
@@ -344,6 +421,19 @@ export class EditorPanelManager {
       });
 
       webview.postMessage({ type: 'queryResult', payload: result });
+
+      // Performance tracking (Feature D)
+      if (payload.requestId && result.responseTime) {
+        const schemaTimestamp = this.storage.loadSchema()?.fetchedAt;
+        const existing = this.storage.loadPerformanceStats(payload.requestId);
+        const updated = updatePerformanceStats(existing, payload.requestId, result.responseTime, schemaTimestamp);
+        this.storage.savePerformanceStats(payload.requestId, updated);
+
+        const anomaly = detectAnomaly(updated, result.responseTime);
+        if (anomaly) {
+          webview.postMessage({ type: 'performanceAnomaly', payload: anomaly });
+        }
+      }
     } catch (err: unknown) {
       const errorMessage = err instanceof Error ? err.message : String(err);
       webview.postMessage({

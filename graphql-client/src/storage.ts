@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import type { Collection, Environment, HistoryEntry, IntrospectedSchema, ImpactReport, AIProviderConfig, HeaderEntry } from './types';
+import type { Collection, Environment, HistoryEntry, IntrospectedSchema, ImpactReport, AIProviderConfig, HeaderEntry, RequestProvenance, PerformanceStats } from './types';
 
 const KEYS = {
   collections: 'graphqlClient.collections',
@@ -12,6 +12,8 @@ const KEYS = {
   aiConfig: 'graphqlClient.aiConfig',
   sharedHeaders: 'graphqlClient.sharedHeaders',
   migrated: 'graphqlClient.migrated',
+  provenance: 'graphqlClient.provenance',
+  performanceStats: 'graphqlClient.performanceStats',
 } as const;
 
 const MAX_HISTORY = 50;
@@ -127,6 +129,32 @@ export class StorageService {
 
   loadAIConfig(): AIProviderConfig | undefined {
     return this.workspaceState.get<AIProviderConfig>(KEYS.aiConfig);
+  }
+
+  // ── Provenance (workspace-scoped) ──
+
+  saveProvenance(requestId: string, provenance: RequestProvenance): void {
+    const all = this.workspaceState.get<Record<string, RequestProvenance>>(KEYS.provenance) ?? {};
+    all[requestId] = provenance;
+    this.workspaceState.update(KEYS.provenance, all);
+  }
+
+  loadProvenance(requestId: string): RequestProvenance | undefined {
+    const all = this.workspaceState.get<Record<string, RequestProvenance>>(KEYS.provenance) ?? {};
+    return all[requestId];
+  }
+
+  // ── Performance Stats (workspace-scoped) ──
+
+  savePerformanceStats(requestId: string, stats: PerformanceStats): void {
+    const all = this.workspaceState.get<Record<string, PerformanceStats>>(KEYS.performanceStats) ?? {};
+    all[requestId] = stats;
+    this.workspaceState.update(KEYS.performanceStats, all);
+  }
+
+  loadPerformanceStats(requestId: string): PerformanceStats | undefined {
+    const all = this.workspaceState.get<Record<string, PerformanceStats>>(KEYS.performanceStats) ?? {};
+    return all[requestId];
   }
 
   // ── Shared Headers (global — persists across workspaces) ──

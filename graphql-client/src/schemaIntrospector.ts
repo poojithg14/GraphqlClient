@@ -1,4 +1,4 @@
-import type { IntrospectedSchema, SchemaObjectType, SchemaField, SchemaArgument, SchemaTypeRef } from './types';
+import type { IntrospectedSchema, SchemaObjectType, SchemaField, SchemaArgument, SchemaTypeRef, AvailableField } from './types';
 
 const INTROSPECTION_QUERY = `
   query IntrospectionQuery {
@@ -229,11 +229,39 @@ function defaultValueForType(
   return null;
 }
 
+/** Build recursive AvailableField[] for a given type, cycle-safe */
+function buildAvailableFields(
+  typeName: string,
+  allTypes: Record<string, SchemaObjectType>,
+  visited: Set<string>,
+): AvailableField[] {
+  const objectType = allTypes[typeName];
+  if (!objectType) return [];
+
+  const fields: AvailableField[] = [];
+  for (const f of objectType.fields) {
+    const inner = unwrapType(f.type);
+    const isObject = inner.kind === 'OBJECT' || inner.kind === 'INTERFACE' || inner.kind === 'UNION';
+    const field: AvailableField = {
+      name: f.name,
+      type: typeRefToString(f.type),
+      hasSubFields: isObject,
+    };
+    if (isObject && inner.name && !visited.has(inner.name)) {
+      const childVisited = new Set(visited);
+      childVisited.add(inner.name);
+      field.subFields = buildAvailableFields(inner.name, allTypes, childVisited);
+    }
+    fields.push(field);
+  }
+  return fields;
+}
+
 export function generateOperationString(
   schema: IntrospectedSchema,
   operationType: 'query' | 'mutation',
   fieldName: string,
-): { name: string; type: 'query' | 'mutation'; query: string; variables: string; returnTypeName: string | null; availableFields: Array<{ name: string; type: string; hasSubFields: boolean }>; operationArgs: Array<{ name: string; type: string; required: boolean; defaultValue: string | null }> } {
+): { name: string; type: 'query' | 'mutation'; query: string; variables: string; returnTypeName: string | null; availableFields: AvailableField[]; operationArgs: Array<{ name: string; type: string; required: boolean; defaultValue: string | null }> } {
   const rootType = operationType === 'query' ? schema.queryType : schema.mutationType;
   if (!rootType) {
     throw new Error(`No ${operationType} type in schema`);
@@ -261,21 +289,11 @@ export function generateOperationString(
   // Determine return type and available fields
   const returnType = unwrapType(field.type);
   let returnTypeName: string | null = null;
-  const availableFields: Array<{ name: string; type: string; hasSubFields: boolean }> = [];
+  let availableFields: AvailableField[] = [];
 
   if (returnType.kind === 'OBJECT' && returnType.name) {
     returnTypeName = returnType.name;
-    const objectType = schema.types[returnType.name];
-    if (objectType) {
-      for (const f of objectType.fields) {
-        const inner = unwrapType(f.type);
-        availableFields.push({
-          name: f.name,
-          type: typeRefToString(f.type),
-          hasSubFields: inner.kind === 'OBJECT',
-        });
-      }
-    }
+    availableFields = buildAvailableFields(returnType.name, schema.types, new Set([returnType.name]));
   }
 
   // Assemble skeleton query with __typename placeholder

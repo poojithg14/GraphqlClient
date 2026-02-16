@@ -52,6 +52,15 @@ export interface HistoryEntry {
   success: boolean;
 }
 
+// ── Available Field (recursive, for field picker) ──
+
+export interface AvailableField {
+  name: string;
+  type: string;
+  hasSubFields: boolean;
+  subFields?: AvailableField[];
+}
+
 // ── Schema Introspection ──
 
 export interface SchemaTypeRef {
@@ -90,7 +99,7 @@ export interface IntrospectedSchema {
 // ── Webview → Extension Messages ──
 
 export type WebviewMessage =
-  | { type: 'executeQuery'; payload: { query: string; variables: string; headers: Record<string, string>; endpoint: string } }
+  | { type: 'executeQuery'; payload: { query: string; variables: string; headers: Record<string, string>; endpoint: string; requestId?: string } }
   | { type: 'saveCollections'; payload: Collection[] }
   | { type: 'loadCollections' }
   | { type: 'saveEnvironments'; payload: Environment }
@@ -118,12 +127,18 @@ export type WebviewMessage =
   | { type: 'saveAIConfig'; payload: AIProviderConfig }
   | { type: 'loadAIConfig' }
   | { type: 'loadSharedHeaders' }
-  | { type: 'saveSharedHeaders'; payload: HeaderEntry[] };
+  | { type: 'saveSharedHeaders'; payload: HeaderEntry[] }
+  | { type: 'analyzeQuerySecurity'; payload: { query: string } }
+  | { type: 'loadProvenance'; payload: { requestId: string } }
+  | { type: 'addProvenanceEntry'; payload: { requestId: string; entry: ProvenanceEntry } }
+  | { type: 'previewSchemaImpact'; payload: { schemaText: string } }
+  | { type: 'preHealAll'; payload: { entries: Array<{ requestId: string; collectionId: string; folderId: string; fixes: QueryHealFix[] }> } }
+  | { type: 'loadPerformanceStats'; payload: { requestId: string } };
 
 // ── Extension → Webview Messages ──
 
 export type ExtensionMessage =
-  | { type: 'queryResult'; payload: { data: unknown; responseTime: number } }
+  | { type: 'queryResult'; payload: { data: unknown; responseTime: number; statusCode?: number; responseSize?: number } }
   | { type: 'queryError'; payload: { error: string; responseTime: number } }
   | { type: 'collectionsLoaded'; payload: Collection[] }
   | { type: 'environmentsLoaded'; payload: Environment }
@@ -136,16 +151,22 @@ export type ExtensionMessage =
   | { type: 'schemaLoaded'; payload: IntrospectedSchema }
   | { type: 'schemaError'; payload: { error: string } }
   | { type: 'schemaIntrospecting' }
-  | { type: 'operationGenerated'; payload: { name: string; type: 'query' | 'mutation'; query: string; variables: string; returnTypeName: string | null; availableFields: Array<{ name: string; type: string; hasSubFields: boolean }>; operationArgs: Array<{ name: string; type: string; required: boolean; defaultValue: string | null }> } }
+  | { type: 'operationGenerated'; payload: { name: string; type: 'query' | 'mutation'; query: string; variables: string; returnTypeName: string | null; availableFields: AvailableField[]; operationArgs: Array<{ name: string; type: string; required: boolean; defaultValue: string | null }> } }
   | { type: 'promptSaveToCollection'; payload: Collection[] }
   | { type: 'saveConfirmed' }
   | { type: 'queryCostResult'; payload: QueryCostBreakdown }
   | { type: 'impactReportReady'; payload: ImpactReport }
   | { type: 'impactReportLoaded'; payload: ImpactReport }
   | { type: 'autoHealComplete'; payload: { healed: number; total: number } }
-  | { type: 'nlResult'; payload: { query: string; variables: string; resolverCode?: string; returnTypeName?: string | null; availableFields?: Array<{ name: string; type: string; hasSubFields: boolean }>; operationArgs?: Array<{ name: string; type: string; required: boolean; defaultValue: string | null }> } }
+  | { type: 'nlResult'; payload: { query: string; variables: string; resolverCode?: string; returnTypeName?: string | null; availableFields?: AvailableField[]; operationArgs?: Array<{ name: string; type: string; required: boolean; defaultValue: string | null }>; warning?: string } }
   | { type: 'aiConfigLoaded'; payload: AIProviderConfig | null }
-  | { type: 'sharedHeadersLoaded'; payload: HeaderEntry[] };
+  | { type: 'sharedHeadersLoaded'; payload: HeaderEntry[] }
+  | { type: 'securityResult'; payload: SecurityAnalysisResult }
+  | { type: 'provenanceLoaded'; payload: RequestProvenance }
+  | { type: 'predictedImpactReady'; payload: ImpactReport }
+  | { type: 'sdlParseError'; payload: { error: string } }
+  | { type: 'performanceAnomaly'; payload: PerformanceAnomaly }
+  | { type: 'performanceStatsLoaded'; payload: PerformanceStats | null };
 
 // ── Schema Diff ──
 
@@ -232,6 +253,66 @@ export interface GeneratedResolver {
   language: string;
   operationType: string;
   fieldName: string;
+}
+
+// ── Query Provenance (Feature A) ──
+
+export interface ProvenanceEntry {
+  timestamp: string;
+  action: 'created' | 'field-added' | 'field-removed' | 'auto-healed' | 'manual-edit' | 'variables-changed';
+  origin?: 'nl-input' | 'schema-explorer' | 'manual' | 'import';
+  detail: string;
+  querySnapshot?: string;
+  fieldName?: string;
+}
+
+export interface RequestProvenance {
+  requestId: string;
+  entries: ProvenanceEntry[];
+}
+
+// ── Query Security (Feature C) ──
+
+export type SecurityLevel = 'safe' | 'warning' | 'unsafe';
+
+export interface SecurityIssue {
+  rule: 'depth-attack' | 'circular-reference' | 'sensitive-field' | 'alias-abuse' | 'missing-pagination';
+  severity: 'info' | 'warning' | 'critical';
+  message: string;
+  fieldPath?: string;
+}
+
+export interface SecurityAnalysisResult {
+  level: SecurityLevel;
+  score: number;
+  issues: SecurityIssue[];
+  summary: string;
+}
+
+// ── Performance Anomaly Detection (Feature D) ──
+
+export interface PerformanceStats {
+  requestId: string;
+  count: number;
+  totalTime: number;
+  avgTime: number;
+  minTime: number;
+  maxTime: number;
+  sumSquaredDiff: number;
+  stddev: number;
+  lastResponseTime: number;
+  lastTimestamp: string;
+  lastSchemaChangeTimestamp?: string;
+}
+
+export interface PerformanceAnomaly {
+  requestId: string;
+  latestTime: number;
+  avgTime: number;
+  ratio: number;
+  message: string;
+  schemaCorrelation: boolean;
+  schemaCorrelationMessage?: string;
 }
 
 // ── Cross-Environment Diffing ──

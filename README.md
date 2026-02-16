@@ -67,4 +67,3 @@ A full-featured GraphQL client built into VS Code. Manage collections, switch en
 - **Dinesh Bukya** — Co-contributor
 - **Ganesh Pinjala** — Co-contributor
 - **Kanishuk Reddy Lingareddy Gari** — Co-contributor
-- **Nithish Japala** — Co-contributor

@@ -1,5 +1,6 @@
 import type {
-  IntrospectedSchema, NLParseResult, GeneratedResolver, AIProviderConfig,
+  IntrospectedSchema, NLParseResult, GeneratedResolver, AIProviderConfig, AvailableField,
+  SchemaObjectType,
 } from './types';
 import { unwrapType, typeRefToString, levenshteinDistance } from './schemaDiffer';
 
@@ -42,39 +43,77 @@ export function parseNaturalLanguage(input: string, schema?: IntrospectedSchema)
     if (intent === 'get' || intent === 'unknown') intent = 'list';
   }
 
-  // Match entity from schema types
+  // Match entity — prefer root query/mutation field names over type names
   let entityName = '';
   let bestScore = 0;
-  const schemaTypeNames = schema ? Object.keys(schema.types) : [];
 
+  // Collect root field names for priority matching
+  const rootFieldNames: string[] = [];
+  if (schema?.queryType) {
+    for (const f of schema.queryType.fields) rootFieldNames.push(f.name);
+  }
+  if (schema?.mutationType) {
+    for (const f of schema.mutationType.fields) rootFieldNames.push(f.name);
+  }
+
+  // First pass: match against root field names (highest priority)
   for (const token of meaningfulTokens) {
     if (INTENT_VERBS[token]) continue;
 
-    for (const typeName of schemaTypeNames) {
-      const lower = typeName.toLowerCase();
+    for (const fieldName of rootFieldNames) {
+      const lower = fieldName.toLowerCase();
       // Exact match
       if (token === lower) {
-        if (typeName.length > entityName.length || bestScore < 1) {
-          entityName = typeName;
-          bestScore = 1;
-        }
-        continue;
+        entityName = fieldName;
+        bestScore = 2;
+        break;
       }
-      // Plural strip: "users" → "user" → "User"
+      // Plural strip: "orders" → "order" matches "order", or "users" matches "users"
       if (token.endsWith('s') && token.slice(0, -1) === lower) {
-        if (bestScore < 0.95) {
-          entityName = typeName;
-          bestScore = 0.95;
-        }
+        if (bestScore < 1.9) { entityName = fieldName; bestScore = 1.9; }
         continue;
       }
-      // Fuzzy match
-      const dist = levenshteinDistance(token, lower);
-      if (dist <= 2 && token.length > 2) {
-        const score = 1 - dist / Math.max(token.length, lower.length);
-        if (score > bestScore) {
-          entityName = typeName;
-          bestScore = score;
+      // Singular→plural: "order" matches "orders"
+      if (lower.endsWith('s') && lower.slice(0, -1) === token) {
+        if (bestScore < 1.9) { entityName = fieldName; bestScore = 1.9; }
+        continue;
+      }
+      // Contains match
+      if (lower.includes(token) || token.includes(lower)) {
+        if (bestScore < 1.5) { entityName = fieldName; bestScore = 1.5; }
+      }
+    }
+    if (bestScore >= 2) break;
+  }
+
+  // Second pass: fall back to type name matching only if no root field matched
+  if (bestScore < 1.5) {
+    const schemaTypeNames = schema ? Object.keys(schema.types) : [];
+    for (const token of meaningfulTokens) {
+      if (INTENT_VERBS[token]) continue;
+
+      for (const typeName of schemaTypeNames) {
+        const lower = typeName.toLowerCase();
+        if (token === lower) {
+          if (typeName.length > entityName.length || bestScore < 1) {
+            entityName = typeName;
+            bestScore = 1;
+          }
+          continue;
+        }
+        if (token.endsWith('s') && token.slice(0, -1) === lower) {
+          if (bestScore < 0.95) { entityName = typeName; bestScore = 0.95; }
+          continue;
+        }
+        // Tighter fuzzy: distance ≤1 for short words (≤5 chars)
+        const maxDist = token.length <= 5 ? 1 : 2;
+        const dist = levenshteinDistance(token, lower);
+        if (dist <= maxDist && token.length > 2) {
+          const score = 1 - dist / Math.max(token.length, lower.length);
+          if (score > bestScore) {
+            entityName = typeName;
+            bestScore = score;
+          }
         }
       }
     }
@@ -119,11 +158,39 @@ export function parseNaturalLanguage(input: string, schema?: IntrospectedSchema)
   return { intent, entityName, fieldHints, filters, confidence };
 }
 
+/** Build recursive AvailableField[] for a given type, cycle-safe */
+function buildAvailableFields(
+  typeName: string,
+  allTypes: Record<string, SchemaObjectType>,
+  visited: Set<string>,
+): AvailableField[] {
+  const objectType = allTypes[typeName];
+  if (!objectType) return [];
+
+  const fields: AvailableField[] = [];
+  for (const f of objectType.fields) {
+    const inner = unwrapType(f.type);
+    const isObject = inner.kind === 'OBJECT' || inner.kind === 'INTERFACE' || inner.kind === 'UNION';
+    const field: AvailableField = {
+      name: f.name,
+      type: typeRefToString(f.type),
+      hasSubFields: isObject,
+    };
+    if (isObject && inner.name && !visited.has(inner.name)) {
+      const childVisited = new Set(visited);
+      childVisited.add(inner.name);
+      field.subFields = buildAvailableFields(inner.name, allTypes, childVisited);
+    }
+    fields.push(field);
+  }
+  return fields;
+}
+
 /** Generate a GraphQL operation from parsed NL result */
 export function generateFromNL(
   parsed: NLParseResult,
   schema: IntrospectedSchema,
-): { query: string; variables: string; returnTypeName: string | null; availableFields: Array<{ name: string; type: string; hasSubFields: boolean }>; operationArgs: Array<{ name: string; type: string; required: boolean; defaultValue: string | null }> } {
+): { query: string; variables: string; returnTypeName: string | null; availableFields: AvailableField[]; operationArgs: Array<{ name: string; type: string; required: boolean; defaultValue: string | null }>; warning?: string } {
   const rootType = (parsed.intent === 'create' || parsed.intent === 'update' || parsed.intent === 'delete')
     ? schema.mutationType
     : schema.queryType;
@@ -165,6 +232,53 @@ export function generateFromNL(
     if (intentPrefix && fieldLower.startsWith(intentPrefix) && fieldLower.includes(entityLower)) {
       bestField = field;
       bestFieldScore = 8;
+    }
+  }
+
+  // Fallback 1: match by return type name when field name didn't match
+  if (bestFieldScore < 5) {
+    for (const field of rootType.fields) {
+      const returnType = unwrapType(field.type);
+      if (returnType.name) {
+        const returnLower = returnType.name.toLowerCase();
+        if (returnLower === entityLower || returnLower === entityLower.slice(0, -1) || (entityLower.endsWith('s') && returnLower === entityLower.slice(0, -1))) {
+          bestField = field;
+          bestFieldScore = 7;
+          break;
+        }
+        if (returnLower.includes(entityLower) || entityLower.includes(returnLower)) {
+          if (bestFieldScore < 4) {
+            bestField = field;
+            bestFieldScore = 4;
+          }
+        }
+      }
+    }
+  }
+
+  // Fallback 2: entity is a nested type — find root field whose return type has a sub-field matching entity
+  if (bestFieldScore < 3) {
+    for (const field of rootType.fields) {
+      const returnType = unwrapType(field.type);
+      if (returnType.kind === 'OBJECT' && returnType.name && schema.types[returnType.name]) {
+        const parentType = schema.types[returnType.name];
+        for (const subField of parentType.fields) {
+          const subLower = subField.name.toLowerCase();
+          if (subLower === entityLower || subLower === entityLower + 's' || (entityLower.endsWith('s') && subLower === entityLower.slice(0, -1))) {
+            bestField = field;
+            bestFieldScore = 3;
+            break;
+          }
+          // Also check if sub-field's return type name matches entity
+          const subReturnType = unwrapType(subField.type);
+          if (subReturnType.name && subReturnType.name.toLowerCase() === entityLower) {
+            bestField = field;
+            bestFieldScore = 3;
+            break;
+          }
+        }
+        if (bestFieldScore >= 3) break;
+      }
     }
   }
 
@@ -233,16 +347,9 @@ export function generateFromNL(
 
   // Build metadata for Fields & Arguments panel
   const returnTypeName = returnType.name ?? null;
-  const availableFields: Array<{ name: string; type: string; hasSubFields: boolean }> = [];
+  let availableFields: AvailableField[] = [];
   if (returnType.kind === 'OBJECT' && returnType.name && schema.types[returnType.name]) {
-    for (const f of schema.types[returnType.name].fields) {
-      const inner = unwrapType(f.type);
-      availableFields.push({
-        name: f.name,
-        type: typeRefToString(f.type),
-        hasSubFields: inner.kind === 'OBJECT' || inner.kind === 'INTERFACE' || inner.kind === 'UNION',
-      });
-    }
+    availableFields = buildAvailableFields(returnType.name, schema.types, new Set([returnType.name]));
   }
   const operationArgs: Array<{ name: string; type: string; required: boolean; defaultValue: string | null }> = bestField.args.map(a => ({
     name: a.name,
@@ -251,7 +358,15 @@ export function generateFromNL(
     defaultValue: a.defaultValue,
   }));
 
-  return { query, variables: JSON.stringify(defaultVars, null, 2), returnTypeName, availableFields, operationArgs };
+  // Build warning based on match quality
+  let warning: string | undefined;
+  if (bestFieldScore > 0 && bestFieldScore < 5) {
+    warning = `No direct query for '${parsed.entityName}'. Mapped to '${bestField.name}' (contains ${parsed.entityName} as a sub-field).`;
+  } else if (bestFieldScore === 0) {
+    warning = `No matching query found for '${parsed.entityName}'. Defaulted to '${bestField.name}'.`;
+  }
+
+  return { query, variables: JSON.stringify(defaultVars, null, 2), returnTypeName, availableFields, operationArgs, warning };
 }
 
 /** Call an AI provider to generate a GraphQL query from natural language */

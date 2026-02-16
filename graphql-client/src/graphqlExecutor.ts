@@ -8,6 +8,8 @@ export interface ExecuteOptions {
 export interface ExecuteResult {
   data: unknown;
   responseTime: number;
+  statusCode: number;
+  responseSize: number;
 }
 
 export async function executeGraphQLQuery(options: ExecuteOptions): Promise<ExecuteResult> {
@@ -48,6 +50,7 @@ export async function executeGraphQLQuery(options: ExecuteOptions): Promise<Exec
   });
 
   const responseTime = Math.round(performance.now() - start);
+  const statusCode = response.status;
 
   if (!response.ok) {
     const text = await response.text().catch(() => '');
@@ -55,11 +58,14 @@ export async function executeGraphQLQuery(options: ExecuteOptions): Promise<Exec
   }
 
   let data: unknown;
+  let responseSize = 0;
   try {
-    data = await response.json();
+    const text = await response.text();
+    responseSize = new TextEncoder().encode(text).length;
+    data = JSON.parse(text);
   } catch {
     throw new Error('Failed to parse response as JSON');
   }
 
-  return { data, responseTime };
+  return { data, responseTime, statusCode, responseSize };
 }

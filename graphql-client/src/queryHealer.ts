@@ -1,44 +1,121 @@
 import type { QueryHealFix, QueryImpactEntry } from './types';
 
-/** Apply auto-heal fixes to a query string by replacing field names at specific lines */
+/** Apply auto-heal fixes to a query string by replacing or removing field names */
 export function healQuery(queryText: string, fixes: QueryHealFix[]): string {
-  const lines = queryText.split('\n');
+  let result = queryText;
 
-  // Sort fixes by line number descending to avoid offset issues
-  const sorted = [...fixes].sort((a, b) => b.lineNumber - a.lineNumber);
+  // Handle removals first (newField === ''), then renames
+  const removals = fixes.filter(f => f.newField === '');
+  const renames = fixes.filter(f => f.newField !== '');
 
-  for (const fix of sorted) {
-    const lineIdx = fix.lineNumber - 1;
-    if (lineIdx < 0 || lineIdx >= lines.length) continue;
-
-    const line = lines[lineIdx];
-    // Replace the field name, preserving alias syntax, args, and sub-selections
-    // Match: optional alias before, the field name, optional args/braces after
-    const pattern = new RegExp(
-      `(\\s*)` +                       // leading whitespace
-      `(?:(\\w+)\\s*:\\s*)?` +         // optional alias
-      `\\b(${escapeRegex(fix.oldField)})\\b` +  // the old field name
-      `(\\s*(?:\\(|\\{|$))`,           // followed by args, brace, or end
-    );
-
-    const match = line.match(pattern);
-    if (match) {
-      const indent = match[1];
-      const alias = match[2];
-      const trailer = match[4];
-
-      let replacement: string;
-      if (alias) {
-        // Keep the alias, replace the real field name
-        replacement = `${indent}${alias}: ${fix.newField}${trailer}`;
-      } else {
-        replacement = `${indent}${fix.newField}${trailer}`;
-      }
-      lines[lineIdx] = line.replace(match[0], replacement);
-    }
+  // Apply removals
+  for (const fix of removals) {
+    result = removeFieldFromQuery(result, fix.oldField);
   }
 
-  return lines.join('\n');
+  // Apply renames on remaining lines
+  if (renames.length > 0) {
+    const lines = result.split('\n');
+    const sorted = [...renames].sort((a, b) => b.lineNumber - a.lineNumber);
+
+    for (const fix of sorted) {
+      // When lineNumber is 0 (placeholder), search all lines for the field
+      const searchAll = fix.lineNumber === 0;
+      for (let i = 0; i < lines.length; i++) {
+        if (!searchAll && i !== fix.lineNumber - 1) continue;
+
+        const line = lines[i];
+        const pattern = new RegExp(
+          `(\\s*)` +
+          `(?:(\\w+)\\s*:\\s*)?` +
+          `\\b(${escapeRegex(fix.oldField)})\\b` +
+          `(\\s*(?:\\(|\\{|$))`,
+        );
+
+        const match = line.match(pattern);
+        if (match) {
+          const indent = match[1];
+          const alias = match[2];
+          const trailer = match[4];
+
+          let replacement: string;
+          if (alias) {
+            replacement = `${indent}${alias}: ${fix.newField}${trailer}`;
+          } else {
+            replacement = `${indent}${fix.newField}${trailer}`;
+          }
+          lines[i] = line.replace(match[0], replacement);
+          if (!searchAll) break;
+          break; // Only replace first occurrence per fix
+        }
+      }
+    }
+    result = lines.join('\n');
+  }
+
+  return result;
+}
+
+/** Remove a field (and its sub-selection block if any) from a query string */
+function removeFieldFromQuery(queryText: string, fieldName: string): string {
+  const lines = queryText.split('\n');
+  const result: string[] = [];
+  let i = 0;
+
+  while (i < lines.length) {
+    const line = lines[i];
+    // Check if this line contains the field to remove
+    const pattern = new RegExp(
+      `^(\\s*)` +
+      `(?:\\w+\\s*:\\s*)?` +
+      `\\b${escapeRegex(fieldName)}\\b` +
+      `\\s*(?:\\(.*?\\))?\\s*`,
+    );
+    const match = line.match(pattern);
+
+    if (match) {
+      // Check if the field has a sub-selection block on the same line or next lines
+      const afterField = line.slice(match[0].length);
+      if (afterField.trim().startsWith('{')) {
+        // Sub-selection starts on same line — skip until matching closing brace
+        let depth = 0;
+        for (let j = line.indexOf('{', match[0].length); j < line.length; j++) {
+          if (line[j] === '{') depth++;
+          else if (line[j] === '}') depth--;
+        }
+        i++;
+        while (i < lines.length && depth > 0) {
+          for (const ch of lines[i]) {
+            if (ch === '{') depth++;
+            else if (ch === '}') depth--;
+          }
+          i++;
+        }
+        continue;
+      } else if (line.trim().endsWith('{')) {
+        // Sub-selection brace at end of line
+        let depth = 1;
+        i++;
+        while (i < lines.length && depth > 0) {
+          for (const ch of lines[i]) {
+            if (ch === '{') depth++;
+            else if (ch === '}') depth--;
+          }
+          i++;
+        }
+        continue;
+      } else {
+        // Simple scalar field — just skip this line
+        i++;
+        continue;
+      }
+    }
+
+    result.push(line);
+    i++;
+  }
+
+  return result.join('\n');
 }
 
 /** Extract auto-fixable entries from an impact entry */
@@ -46,11 +123,16 @@ export function extractAutoFixes(entry: QueryImpactEntry): QueryHealFix[] {
   const fixes: QueryHealFix[] = [];
   for (const change of entry.brokenFields) {
     if (change.changeType === 'renamed' && change.suggestedReplacement && change.confidence > 0.7) {
-      // We'll need line numbers from the query analysis — use 0 as placeholder
-      // The actual line number should be populated by the caller using extractFieldsFromQuery
       fixes.push({
         oldField: change.fieldName,
         newField: change.suggestedReplacement,
+        lineNumber: 0,
+      });
+    } else if (change.changeType === 'removed') {
+      // Use empty newField as sentinel for removal
+      fixes.push({
+        oldField: change.fieldName,
+        newField: '',
         lineNumber: 0,
       });
     }

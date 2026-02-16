@@ -4,6 +4,7 @@ import { introspectSchema, generateOperationString } from './schemaIntrospector'
 import { diffSchemas, extractFieldsFromQuery } from './schemaDiffer';
 import { healQuery } from './queryHealer';
 import { parseNaturalLanguage, generateFromNL, callAIProvider, generateResolverStub } from './nlToGraphql';
+import { parseSchemaInput } from './sdlParser';
 import type { Collection, QueryImpactEntry, ImpactReport, SchemaFieldChange, QueryHealFix } from './types';
 
 /**
@@ -54,6 +55,17 @@ export class GraphQLClientViewProvider implements vscode.WebviewViewProvider {
         payload: this.storage.loadCollections(),
       });
     }
+  }
+
+  /** Re-evaluate impact report after collections change (e.g. query saved/healed) */
+  public refreshImpactReport(): void {
+    const report = this.storage.loadImpactReport();
+    if (!report || !this.view) return;
+    const schema = this.storage.loadSchema();
+    if (!schema) return;
+    const updated = this.buildImpactReport(report.diff, schema);
+    this.storage.saveImpactReport(updated);
+    this.view.webview.postMessage({ type: 'impactReportReady', payload: updated });
   }
 
   /** Called by extension host when environments change (e.g. auto-detected endpoint) */
@@ -153,6 +165,14 @@ export class GraphQLClientViewProvider implements vscode.WebviewViewProvider {
           webview.postMessage({ type: 'aiConfigLoaded', payload: aiConfig ?? null });
           break;
         }
+
+        case 'previewSchemaImpact':
+          this.handlePreviewSchemaImpact(webview, message.payload);
+          break;
+
+        case 'preHealAll':
+          this.handleAutoHealAll(webview, message.payload);
+          break;
       }
     });
   }
@@ -217,7 +237,7 @@ export class GraphQLClientViewProvider implements vscode.WebviewViewProvider {
           }
 
           const autoFixAvailable = brokenFields.some(
-            f => f.changeType === 'renamed' && f.suggestedReplacement && f.confidence > 0.7,
+            f => f.changeType === 'removed' || (f.changeType === 'renamed' && f.suggestedReplacement && f.confidence > 0.7),
           );
 
           let status: 'broken' | 'affected' | 'safe';
@@ -276,6 +296,7 @@ export class GraphQLClientViewProvider implements vscode.WebviewViewProvider {
 
     this.storage.saveCollections(updated);
     this.notifyCollectionsChanged();
+    this.refreshImpactReport();
     webview.postMessage({ type: 'autoHealComplete', payload: { healed, total: 1 } });
   }
 
@@ -305,6 +326,7 @@ export class GraphQLClientViewProvider implements vscode.WebviewViewProvider {
 
     this.storage.saveCollections(collections);
     this.notifyCollectionsChanged();
+    this.refreshImpactReport();
     webview.postMessage({ type: 'autoHealComplete', payload: { healed, total: payload.entries.length } });
   }
 
@@ -335,7 +357,7 @@ export class GraphQLClientViewProvider implements vscode.WebviewViewProvider {
       } else {
         const parsed = parseNaturalLanguage(payload.input, schema);
         const result = generateFromNL(parsed, schema);
-        webview.postMessage({ type: 'nlResult', payload: { query: result.query, variables: result.variables, returnTypeName: result.returnTypeName, availableFields: result.availableFields, operationArgs: result.operationArgs } });
+        webview.postMessage({ type: 'nlResult', payload: { query: result.query, variables: result.variables, returnTypeName: result.returnTypeName, availableFields: result.availableFields, operationArgs: result.operationArgs, warning: result.warning } });
       }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -357,6 +379,43 @@ export class GraphQLClientViewProvider implements vscode.WebviewViewProvider {
       type: 'nlResult',
       payload: { query: '', variables: '{}', resolverCode: result.code },
     });
+  }
+
+  private handlePreviewSchemaImpact(
+    webview: vscode.Webview,
+    payload: { schemaText: string },
+  ): void {
+    try {
+      const parsedSchema = parseSchemaInput(payload.schemaText);
+      const currentSchema = this.storage.loadSchema();
+      if (!currentSchema) {
+        webview.postMessage({ type: 'sdlParseError', payload: { error: 'No current schema loaded. Introspect first.' } });
+        return;
+      }
+
+      // Merge: start from current schema, overlay only the types the user redefined.
+      // This way omitted types aren't treated as "removed".
+      const mergedSchema = {
+        ...currentSchema,
+        queryType: parsedSchema.queryType ?? currentSchema.queryType,
+        mutationType: parsedSchema.mutationType ?? currentSchema.mutationType,
+        types: { ...currentSchema.types },
+        inputTypes: { ...currentSchema.inputTypes },
+      };
+      for (const [name, type] of Object.entries(parsedSchema.types)) {
+        mergedSchema.types[name] = type;
+      }
+      for (const [name, type] of Object.entries(parsedSchema.inputTypes)) {
+        mergedSchema.inputTypes[name] = type;
+      }
+
+      const diff = diffSchemas(currentSchema, mergedSchema);
+      const report = this.buildImpactReport(diff, mergedSchema);
+      webview.postMessage({ type: 'predictedImpactReady', payload: report });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      webview.postMessage({ type: 'sdlParseError', payload: { error: msg } });
+    }
   }
 
   private handleGenerateOperation(

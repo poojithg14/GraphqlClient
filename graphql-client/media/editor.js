@@ -10,9 +10,11 @@
     environments: { active: 'local', envs: {} },
     history: [],
     queryCost: null,
+    securityResult: null,
     sharedHeaders: [],
   };
   if (!state.sharedHeaders) state.sharedHeaders = [];
+  if (!state.securityResult) state.securityResult = null;
 
   let tabStates = {};
   let isLoading = false;
@@ -31,6 +33,7 @@
         else if (k === 'innerHTML') e.innerHTML = v;
         else if (k.startsWith('on')) e.addEventListener(k.slice(2).toLowerCase(), v);
         else if (k === 'style' && typeof v === 'object') Object.assign(e.style, v);
+        else if (k === 'value') e.value = v;
         else e.setAttribute(k, v);
       }
     }
@@ -95,6 +98,23 @@
         state.sharedHeaders = msg.payload || [];
         saveState();
         break;
+      case 'securityResult':
+        state.securityResult = msg.payload;
+        saveState();
+        renderSecurityBadge();
+        break;
+      case 'performanceAnomaly':
+        showPerformanceAlert(msg.payload);
+        break;
+      case 'performanceStatsLoaded':
+        // handled silently
+        break;
+      case 'provenanceLoaded':
+        if (state.activeTabId && tabStates[state.activeTabId]) {
+          tabStates[state.activeTabId].provenance = msg.payload;
+          if (tabStates[state.activeTabId].responseSubTab === 'provenance') renderEditor();
+        }
+        break;
       case 'nlResult':
         break;
     }
@@ -154,7 +174,8 @@
         responseSubTab: 'response',
         returnTypeName: req.returnTypeName || null,
         availableFields: req.availableFields || [],
-        selectedFields: [],
+        selectedFields: parseQueryFields(initialQuery),
+        expandedObjectFields: {},
         operationArgs: operationArgs,
         argValues: argValues,
         bottomPanelExpanded: true,
@@ -165,6 +186,12 @@
     renderTabs();
     renderEditor();
 
+    // Provenance: track creation if new request
+    if (!tabStates[req.id].provenanceTracked) {
+      tabStates[req.id].provenanceTracked = true;
+      var origin = req.source === 'schema-explorer' ? 'schema-explorer' : req.source === 'nl-input' ? 'nl-input' : 'manual';
+      trackProvenanceEntry('created', 'Request opened: ' + req.name, { origin: origin, querySnapshot: req.query || '' });
+    }
   }
 
   // ── Tabs ──
@@ -350,6 +377,18 @@
     });
     endpointBar.appendChild(costBadge);
 
+    // Security badge
+    const secBadge = el('span', { className: 'security-badge security-safe', textContent: '...' });
+    if (state.securityResult) {
+      secBadge.className = 'security-badge security-' + state.securityResult.level;
+      secBadge.textContent = state.securityResult.level.toUpperCase() + ' ' + state.securityResult.score;
+      secBadge.title = state.securityResult.summary;
+    }
+    secBadge.addEventListener('click', () => {
+      if (state.securityResult) showSecurityTooltip(secBadge, state.securityResult);
+    });
+    endpointBar.appendChild(secBadge);
+
     endpointBar.appendChild(el('button', {
       className: 'btn btn-run',
       textContent: isLoading ? 'Running...' : '▶ Run',
@@ -368,8 +407,9 @@
     }));
     content.appendChild(endpointBar);
 
-    // Trigger cost calculation
+    // Trigger cost + security calculation
     requestCostCalculation(ts.query);
+    requestSecurityAnalysis(ts.query);
 
     // Query error bar
     if (queryError) {
@@ -398,6 +438,7 @@
         syncDirtyState();
         renderTabs();
         requestCostCalculation(val);
+        requestSecurityAnalysis(val);
         // Live-update error bar + run button without full re-render
         const existingErr = content.querySelector('.query-error-bar');
         const newErr = validateQuery(val);
@@ -411,6 +452,9 @@
         }
         const runBtn = endpointBar.querySelector('.btn-run');
         if (runBtn) runBtn.disabled = !!newErr || isLoading;
+        // Two-way sync: re-parse query text to update field checkboxes
+        ts.selectedFields = parseQueryFields(val);
+        rerenderBottomPanel(ts);
       }));
       // Bottom panel with fields + args
       const bottomPanel = buildQueryBottomPanel(ts);
@@ -423,20 +467,43 @@
     // Right panel (response/history/diff)
     const rightPanel = el('div', { className: 'editor-panel' });
     const rightSubTabs = el('div', { className: 'sub-tabs' });
-    ['response', 'history'].forEach(tab => {
-      let label = tab.charAt(0).toUpperCase() + tab.slice(1);
-      if (tab === 'response' && ts.responseTime != null) label += ' (' + ts.responseTime + 'ms)';
-      rightSubTabs.appendChild(el('button', {
+    ['response', 'history', 'provenance'].forEach(tab => {
+      var tabBtn = el('button', {
         className: 'sub-tab' + (ts.responseSubTab === tab ? ' active' : ''),
-        textContent: label,
-        onClick: () => { ts.responseSubTab = tab; renderEditor(); },
-      }));
+        onClick: () => {
+          ts.responseSubTab = tab;
+          if (tab === 'provenance') {
+            vscode.postMessage({ type: 'loadProvenance', payload: { requestId: state.activeTabId } });
+          }
+          renderEditor();
+        },
+      });
+
+      if (tab === 'response' && ts.responseTime != null) {
+        tabBtn.appendChild(el('span', { textContent: 'Response (' }));
+        tabBtn.appendChild(el('span', { textContent: ts.responseTime + 'ms', title: 'Response Time' }));
+        if (ts.statusCode) {
+          tabBtn.appendChild(el('span', { textContent: ' | ' }));
+          tabBtn.appendChild(el('span', { textContent: String(ts.statusCode), title: 'Status Code' }));
+        }
+        if (ts.responseSize) {
+          tabBtn.appendChild(el('span', { textContent: ' | ' }));
+          tabBtn.appendChild(el('span', { textContent: formatBytes(ts.responseSize), title: 'Response Size' }));
+        }
+        tabBtn.appendChild(el('span', { textContent: ')' }));
+      } else {
+        tabBtn.textContent = tab.charAt(0).toUpperCase() + tab.slice(1);
+      }
+
+      rightSubTabs.appendChild(tabBtn);
     });
     rightPanel.appendChild(rightSubTabs);
 
     const rightContent = el('div', { className: 'panel-content' });
     if (ts.responseSubTab === 'response') {
       rightContent.appendChild(buildResponseViewer(ts.response));
+    } else if (ts.responseSubTab === 'provenance') {
+      rightContent.appendChild(buildProvenanceViewer(state.activeTabId, ts));
     } else {
       rightContent.appendChild(buildHistoryViewer());
     }
@@ -466,6 +533,15 @@
       spellcheck: 'false', autocomplete: 'off', autocorrect: 'off', autocapitalize: 'off',
     });
 
+    let lastValueOnFocus = value;
+    textarea.addEventListener('focus', () => {
+      lastValueOnFocus = textarea.value;
+    });
+    textarea.addEventListener('blur', () => {
+      if (language === 'graphql' && textarea.value !== lastValueOnFocus) {
+        trackProvenanceEntry('manual-edit', 'Query edited manually');
+      }
+    });
     textarea.addEventListener('input', () => {
       const val = textarea.value;
       onChange(val);
@@ -770,6 +846,12 @@
     renderEditor();
   }
 
+  function formatBytes(bytes) {
+    if (bytes < 1024) return bytes + 'B';
+    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + 'KB';
+    return (bytes / (1024 * 1024)).toFixed(1) + 'MB';
+  }
+
   function formatTimestamp(isoString) {
     try { return new Date(isoString).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }); }
     catch { return isoString; }
@@ -809,6 +891,7 @@
         variables: ts.variables,
         headers: { ...envHeaders, ...sharedHeaders, ...customHeaders },
         endpoint: endpoint,
+        requestId: state.activeTabId,
       },
     });
   }
@@ -820,6 +903,8 @@
 
     ts.response = payload.data;
     ts.responseTime = payload.responseTime;
+    ts.statusCode = payload.statusCode || null;
+    ts.responseSize = payload.responseSize || null;
     ts.responseSubTab = 'response';
 
     const hasErrors = payload.data && typeof payload.data === 'object' && payload.data.errors;
@@ -1116,6 +1201,8 @@
     const opens = (trimmed.match(/\{/g) || []).length;
     const closes = (trimmed.match(/\}/g) || []).length;
     if (opens !== closes) return 'Unbalanced braces: ' + opens + ' opening, ' + closes + ' closing';
+    // Detect empty selection sets: { } with only whitespace inside
+    if (/\{\s*\}/.test(trimmed)) return 'Empty selection set — select at least one sub-field';
     return null;
   }
 
@@ -1137,6 +1224,14 @@
 
   // ── Query Bottom Panel (Fields + Args) ──
   function buildQueryBottomPanel(ts) {
+    // Migrate old array-based selectedFields to object tree
+    if (Array.isArray(ts.selectedFields)) {
+      const obj = {};
+      for (const name of ts.selectedFields) obj[name] = true;
+      ts.selectedFields = obj;
+    }
+    if (!ts.expandedObjectFields) ts.expandedObjectFields = {};
+
     const hasFields = ts.availableFields && ts.availableFields.length > 0;
     const hasArgs = ts.operationArgs && ts.operationArgs.length > 0;
     if (!hasFields && !hasArgs) return null;
@@ -1156,35 +1251,14 @@
 
     const body = el('div', { className: 'query-bottom-panel-body' });
 
-    // Fields section
+    // Fields section (recursive)
     if (hasFields) {
       body.appendChild(el('div', {
         className: 'fields-header',
         textContent: 'Return Fields' + (ts.returnTypeName ? ' (' + ts.returnTypeName + ')' : ''),
       }));
 
-      ts.availableFields.forEach(field => {
-        const isSelected = ts.selectedFields.includes(field.name);
-        const row = el('div', { className: 'field-row' + (isSelected ? ' selected' : '') });
-
-        const toggle = el('button', {
-          className: 'field-toggle',
-          textContent: isSelected ? '\u2713' : '+',
-          onClick: () => {
-            if (isSelected) {
-              ts.selectedFields = ts.selectedFields.filter(n => n !== field.name);
-            } else {
-              ts.selectedFields.push(field.name);
-            }
-            regenerateQuery(ts);
-            renderEditor();
-          },
-        });
-        row.appendChild(toggle);
-        row.appendChild(el('span', { className: 'field-name', textContent: field.name }));
-        row.appendChild(el('span', { className: 'field-type', textContent: field.type }));
-        body.appendChild(row);
-      });
+      renderFieldList(ts.availableFields, ts.selectedFields, '', 0, body, ts);
     }
 
     // Arguments section
@@ -1249,6 +1323,150 @@
     return panel;
   }
 
+  /** Re-render only the bottom panel body, preserving scroll position */
+  function rerenderBottomPanel(ts) {
+    var oldBody = document.querySelector('.query-bottom-panel-body');
+    if (!oldBody) return;
+
+    var newBody = el('div', { className: 'query-bottom-panel-body' });
+    var hasFields = ts.availableFields && ts.availableFields.length > 0;
+    var hasArgs = ts.operationArgs && ts.operationArgs.length > 0;
+
+    if (hasFields) {
+      newBody.appendChild(el('div', {
+        className: 'fields-header',
+        textContent: 'Return Fields' + (ts.returnTypeName ? ' (' + ts.returnTypeName + ')' : ''),
+      }));
+      renderFieldList(ts.availableFields, ts.selectedFields, '', 0, newBody, ts);
+    }
+
+    if (hasArgs) {
+      newBody.appendChild(el('div', {
+        className: 'fields-header',
+        style: { marginTop: hasFields ? '8px' : '0' },
+        textContent: 'Arguments',
+      }));
+
+      ts.operationArgs.forEach(function(arg) {
+        var row = el('div', { className: 'arg-row' });
+        row.appendChild(el('span', { className: 'arg-label', textContent: arg.name }));
+
+        var currentVal = ts.argValues[arg.name] || '';
+        var input = el('input', {
+          className: 'arg-input', type: 'text', value: currentVal,
+          placeholder: arg.required ? 'required' : 'optional',
+        });
+
+        var errorSpan = el('span', { className: 'arg-error' });
+        var validationErr = validateArgValue(currentVal, arg.type, arg.required);
+        if (validationErr) {
+          input.className += ' error';
+          errorSpan.textContent = validationErr;
+        }
+
+        input.addEventListener('input', function() {
+          ts.argValues[arg.name] = input.value;
+          syncVariablesFromArgs(ts);
+          syncDirtyState();
+          renderTabs();
+          var err = validateArgValue(input.value, arg.type, arg.required);
+          if (err) { input.classList.add('error'); errorSpan.textContent = err; }
+          else { input.classList.remove('error'); errorSpan.textContent = ''; }
+        });
+
+        row.appendChild(input);
+        row.appendChild(el('span', { className: 'arg-type', textContent: arg.type }));
+        row.appendChild(errorSpan);
+        newBody.appendChild(row);
+      });
+    }
+
+    // Also update the code editor textarea in-place
+    var textarea = document.querySelector('.code-textarea');
+    if (textarea && textarea.value !== ts.query) {
+      textarea.value = ts.query;
+      var highlight = document.querySelector('.code-highlight');
+      if (highlight) highlight.innerHTML = highlightCode(ts.query, 'graphql');
+      var lineNums = document.querySelector('.line-numbers');
+      if (lineNums) updateLineNumbers(lineNums, ts.query);
+    }
+
+    oldBody.replaceWith(newBody);
+  }
+
+  /** Recursive field list renderer for hierarchical field tree */
+  function renderFieldList(availableFields, selectionNode, parentPath, depth, container, ts) {
+    availableFields.forEach(field => {
+      const fullPath = parentPath ? parentPath + '.' + field.name : field.name;
+      const hasSubFields = field.hasSubFields && field.subFields && field.subFields.length > 0;
+      const isSelected = selectionNode.hasOwnProperty(field.name);
+      const isExpanded = !!ts.expandedObjectFields[fullPath];
+
+      const row = el('div', { className: 'field-row' + (isSelected ? ' selected' : '') });
+
+      // Indentation
+      if (depth > 0) {
+        row.appendChild(el('span', { className: 'field-indent', style: { width: (depth * 16) + 'px' } }));
+      }
+
+      // Expand/collapse arrow for object fields
+      if (hasSubFields) {
+        const expandBtn = el('button', {
+          className: 'field-expand-btn',
+          textContent: isExpanded ? '\u25BE' : '\u25B8',
+          onClick: (e) => {
+            e.stopPropagation();
+            ts.expandedObjectFields[fullPath] = !ts.expandedObjectFields[fullPath];
+            rerenderBottomPanel(ts);
+          },
+        });
+        row.appendChild(expandBtn);
+      } else {
+        row.appendChild(el('span', { className: 'field-expand-spacer' }));
+      }
+
+      // Checkbox toggle
+      const toggle = el('button', {
+        className: 'field-toggle',
+        textContent: isSelected ? '\u2713' : '+',
+        onClick: () => {
+          if (isSelected) {
+            delete selectionNode[field.name];
+            trackProvenanceEntry('field-removed', 'Removed field: ' + field.name, { fieldName: field.name });
+          } else {
+            if (hasSubFields) {
+              selectionNode[field.name] = {};
+              ts.expandedObjectFields[fullPath] = true;
+            } else {
+              selectionNode[field.name] = true;
+            }
+            trackProvenanceEntry('field-added', 'Added field: ' + field.name, { fieldName: field.name });
+          }
+          regenerateQuery(ts);
+          rerenderBottomPanel(ts);
+        },
+      });
+      row.appendChild(toggle);
+      row.appendChild(el('span', { className: 'field-name', textContent: field.name }));
+      row.appendChild(el('span', { className: 'field-type', textContent: field.type }));
+      container.appendChild(row);
+
+      // Render sub-fields if expanded and selected
+      if (hasSubFields && isExpanded) {
+        const subSelection = (typeof selectionNode[field.name] === 'object' && selectionNode[field.name] !== null)
+          ? selectionNode[field.name]
+          : {};
+        // If we toggled expand but haven't selected, use a temporary empty selection for display
+        if (!isSelected) {
+          // Show sub-fields as unselected
+          renderFieldList(field.subFields, {}, fullPath, depth + 1, container, ts);
+        } else {
+          renderFieldList(field.subFields, subSelection, fullPath, depth + 1, container, ts);
+        }
+      }
+    });
+  }
+
   // ── Sync variables JSON from arg inputs ──
   function syncVariablesFromArgs(ts) {
     if (!ts.operationArgs || ts.operationArgs.length === 0) return;
@@ -1279,9 +1497,31 @@
     if (!match) return;
 
     const prefix = match[1];
-    const fields = ts.selectedFields.length > 0 ? ts.selectedFields : ['__typename'];
-    const fieldLines = fields.map(f => '    ' + f).join('\n');
-    ts.query = prefix + '\n' + fieldLines + '\n  }\n}';
+    const selectionTree = ts.selectedFields;
+    const hasAny = typeof selectionTree === 'object' && Object.keys(selectionTree).length > 0;
+    const fieldText = hasAny ? buildFieldLines(selectionTree, 4) : '    __typename';
+    ts.query = prefix + '\n' + fieldText + '\n  }\n}';
+  }
+
+  /** Recursively build field lines from the hierarchical selection tree */
+  function buildFieldLines(selectionTree, indent) {
+    const spaces = ' '.repeat(indent);
+    const lines = [];
+    for (const key of Object.keys(selectionTree)) {
+      const val = selectionTree[key];
+      if (val === true) {
+        lines.push(spaces + key);
+      } else if (typeof val === 'object' && val !== null) {
+        const nested = buildFieldLines(val, indent + 2);
+        // Always emit the block — empty {} triggers validation error
+        lines.push(spaces + key + ' {');
+        if (nested.trim()) {
+          lines.push(nested);
+        }
+        lines.push(spaces + '}');
+      }
+    }
+    return lines.join('\n');
   }
 
   // ── Cost Badge ──
@@ -1330,6 +1570,188 @@
     overlay.appendChild(modal);
     overlay.addEventListener('click', function(e) { if (e.target === overlay) overlay.remove(); });
     document.body.appendChild(overlay);
+  }
+
+  // ── Security Badge ──
+  let securityDebounce = null;
+  function requestSecurityAnalysis(query) {
+    clearTimeout(securityDebounce);
+    securityDebounce = setTimeout(() => {
+      vscode.postMessage({ type: 'analyzeQuerySecurity', payload: { query } });
+    }, 500);
+  }
+
+  function renderSecurityBadge() {
+    const badge = document.querySelector('.security-badge');
+    if (!badge || !state.securityResult) return;
+    const sec = state.securityResult;
+    badge.className = 'security-badge security-' + sec.level;
+    badge.textContent = sec.level.toUpperCase() + ' ' + sec.score;
+    badge.title = sec.summary;
+  }
+
+  function showSecurityTooltip(badge, sec) {
+    var existing = document.querySelector('.security-tooltip');
+    if (existing) { existing.remove(); return; }
+
+    var tooltip = el('div', { className: 'security-tooltip' });
+    tooltip.appendChild(el('div', { style: { fontWeight: '600', marginBottom: '4px' }, textContent: 'Security Score: ' + sec.score + '/100' }));
+    if (sec.issues.length === 0) {
+      tooltip.appendChild(el('div', { textContent: 'No issues detected' }));
+    } else {
+      sec.issues.forEach(function(issue) {
+        var row = el('div', { className: 'security-issue-row' });
+        var sevClass = issue.severity === 'critical' ? 'security-sev-critical' : issue.severity === 'warning' ? 'security-sev-warning' : 'security-sev-info';
+        row.appendChild(el('span', { className: 'security-sev ' + sevClass, textContent: issue.severity.toUpperCase() }));
+        row.appendChild(el('span', { textContent: issue.message }));
+        tooltip.appendChild(row);
+      });
+    }
+    badge.style.position = 'relative';
+    badge.appendChild(tooltip);
+    setTimeout(function() { document.addEventListener('click', function() { tooltip.remove(); }, { once: true }); });
+  }
+
+  // ── Performance Alert ──
+  function showPerformanceAlert(anomaly) {
+    // Remove existing alert if any
+    var existing = document.querySelector('.performance-alert');
+    if (existing) existing.remove();
+
+    var alertClass = anomaly.ratio > 3 ? 'performance-alert critical' : 'performance-alert warning';
+    var alert = el('div', { className: alertClass });
+    var content = el('div', { style: { flex: '1' } });
+    content.appendChild(el('strong', { textContent: 'Performance Anomaly Detected' }));
+    content.appendChild(el('div', { textContent: anomaly.message, style: { fontSize: '11px', marginTop: '2px' } }));
+    if (anomaly.schemaCorrelation && anomaly.schemaCorrelationMessage) {
+      content.appendChild(el('div', { textContent: anomaly.schemaCorrelationMessage, style: { fontSize: '11px', opacity: '0.8', marginTop: '2px' } }));
+    }
+    alert.appendChild(content);
+    alert.appendChild(el('button', {
+      className: 'btn-icon', textContent: '\u00D7', title: 'Dismiss',
+      onClick: function() { alert.remove(); },
+    }));
+
+    // Insert at top of response panel
+    var rightPanel = document.querySelectorAll('.editor-panel')[1];
+    if (rightPanel) {
+      var panelContent = rightPanel.querySelector('.panel-content');
+      if (panelContent) panelContent.insertBefore(alert, panelContent.firstChild);
+    }
+  }
+
+  // ── Provenance Viewer ──
+  function buildProvenanceViewer(requestId, ts) {
+    if (!ts.provenance || !ts.provenance.entries || ts.provenance.entries.length === 0) {
+      return el('div', { className: 'empty-state' }, [
+        el('div', { textContent: 'No provenance data' }),
+        el('div', { textContent: 'Query changes will be tracked here', style: { fontSize: '11px' } }),
+      ]);
+    }
+
+    var timeline = el('div', { className: 'provenance-timeline' });
+    var entries = ts.provenance.entries.slice().reverse(); // newest first
+    entries.forEach(function(entry) {
+      var item = el('div', { className: 'provenance-entry' });
+      var actionClass = 'provenance-action provenance-' + entry.action;
+      item.appendChild(el('span', { className: actionClass, textContent: entry.action }));
+      item.appendChild(el('span', { className: 'provenance-detail', textContent: entry.detail }));
+      if (entry.origin) {
+        item.appendChild(el('span', { className: 'provenance-origin', textContent: entry.origin }));
+      }
+      item.appendChild(el('span', { className: 'provenance-time', textContent: formatTimestamp(entry.timestamp) }));
+      timeline.appendChild(item);
+    });
+    return timeline;
+  }
+
+  // ── Provenance Tracking Hooks ──
+  function trackProvenanceEntry(action, detail, opts) {
+    if (!state.activeTabId) return;
+    var entry = {
+      timestamp: new Date().toISOString(),
+      action: action,
+      detail: detail,
+    };
+    if (opts && opts.origin) entry.origin = opts.origin;
+    if (opts && opts.querySnapshot) entry.querySnapshot = opts.querySnapshot;
+    if (opts && opts.fieldName) entry.fieldName = opts.fieldName;
+    vscode.postMessage({
+      type: 'addProvenanceEntry',
+      payload: { requestId: state.activeTabId, entry: entry },
+    });
+  }
+
+  /** Parse query text to build a hierarchical selection tree for selectedFields */
+  function parseQueryFields(queryText) {
+    if (!queryText || !queryText.trim()) return {};
+    // Find the innermost selection set of the root field
+    // Pattern: operationType Name(...) { rootField(...) { ...fields... } }
+    const outerMatch = queryText.match(/\{\s*\w+[^{]*\{([\s\S]*)\}\s*\}$/);
+    if (!outerMatch) return {};
+    const innerBody = outerMatch[1];
+    return parseSelectionSet(innerBody);
+  }
+
+  /** Recursively parse a selection set body into a tree */
+  function parseSelectionSet(body) {
+    const tree = {};
+    let i = 0;
+    const trimmed = body.trim();
+    const len = trimmed.length;
+
+    while (i < len) {
+      // Skip whitespace and commas
+      while (i < len && /[\s,]/.test(trimmed[i])) i++;
+      if (i >= len) break;
+
+      // Skip comments
+      if (trimmed[i] === '#') {
+        while (i < len && trimmed[i] !== '\n') i++;
+        continue;
+      }
+
+      // Read field name (may include aliases like alias: fieldName, but we keep it simple)
+      let name = '';
+      while (i < len && /[a-zA-Z0-9_]/.test(trimmed[i])) {
+        name += trimmed[i];
+        i++;
+      }
+      if (!name) { i++; continue; }
+
+      // Skip whitespace
+      while (i < len && /\s/.test(trimmed[i])) i++;
+
+      // Check for arguments: skip (...)
+      if (i < len && trimmed[i] === '(') {
+        let depth = 1;
+        i++;
+        while (i < len && depth > 0) {
+          if (trimmed[i] === '(') depth++;
+          else if (trimmed[i] === ')') depth--;
+          i++;
+        }
+        // Skip whitespace after args
+        while (i < len && /\s/.test(trimmed[i])) i++;
+      }
+
+      // Check for sub-selection set { ... }
+      if (i < len && trimmed[i] === '{') {
+        let depth = 1;
+        i++;
+        const start = i;
+        while (i < len && depth > 0) {
+          if (trimmed[i] === '{') depth++;
+          else if (trimmed[i] === '}') depth--;
+          i++;
+        }
+        const subBody = trimmed.substring(start, i - 1);
+        tree[name] = parseSelectionSet(subBody);
+      } else {
+        tree[name] = true;
+      }
+    }
+    return tree;
   }
 
   init();

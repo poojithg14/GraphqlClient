@@ -261,6 +261,13 @@ html, body {
 
 .schema-introspect-btn { font-size: 11px; padding: 3px 8px; }
 
+.schema-search {
+  padding: 4px 10px;
+}
+.schema-search .input {
+  width: 100%; font-size: 11px;
+}
+
 .schema-fetched-at {
   padding: 4px 12px; font-size: 10px; opacity: 0.4;
 }
@@ -295,6 +302,12 @@ html, body {
 }
 .nl-dropdown-hint {
   font-size: 9px; opacity: 0.5; margin-left: 6px;
+}
+.nl-dropdown-group {
+  padding: 4px 8px 2px; font-size: 9px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.5px;
+  color: var(--vscode-descriptionForeground, var(--vscode-foreground));
+  opacity: 0.6; user-select: none; pointer-events: none;
 }
 
 /* ── Impact Report ── */
@@ -344,6 +357,18 @@ html, body {
 .impact-field-change { font-size: 10px; opacity: 0.8; padding: 1px 0; font-family: var(--vscode-editor-font-family, monospace); }
 .impact-arrow { color: var(--vscode-charts-green, #89d185); }
 .impact-change-type { opacity: 0.6; }
+
+/* ── Schema Preview Modal (Feature B) ── */
+.schema-preview-modal { min-width: 360px; max-width: 500px; }
+.schema-preview-textarea {
+  width: 100%; min-height: 150px; max-height: 250px; resize: vertical;
+  font-family: var(--vscode-editor-font-family, 'Consolas', 'Courier New', monospace);
+  font-size: 12px; line-height: 1.5; white-space: pre; tab-size: 2;
+  padding: 8px; margin-bottom: 8px;
+}
+#schema-preview-result {
+  max-height: 200px; overflow-y: auto;
+}
 
 /* ── Sidebar Toast ── */
 .sidebar-toast {

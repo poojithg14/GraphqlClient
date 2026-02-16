@@ -30,6 +30,7 @@ export function activate(context: vscode.ExtensionContext): void {
     }));
     storage.saveCollections(updated);
     sidebarProvider.notifyCollectionsChanged();
+    sidebarProvider.refreshImpactReport();
   };
 
   // When a new request is saved to a collection from the editor

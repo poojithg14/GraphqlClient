@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.4.0] - 2026-02-15
+
+### Added
+- **Unit tests** — 112 tests across 8 modules using Vitest (sdlParser, schemaDiffer, queryCostCalculator, querySecurityAnalyzer, responseDiffer, performanceTracker, queryHealer, nlToGraphql)
+- **CI pipeline** — GitHub Actions workflow running lint, test, and build on Node 18/20/22
+- **GitHub templates** — Bug report and feature request issue templates, pull request template
+- **Documentation** — Architecture overview, feature reference, message protocol, and storage model docs in `docs/`
+- **CONTRIBUTING.md** — Development setup and contribution guidelines
+
+### Changed
+- Project restructured from `graphql-client/` subdirectory to repository root
+- README rewritten with badges, accurate feature list, project structure, and documentation links
+- Feature documentation updated to reflect only UI-enabled features
+
 ## [0.3.0] - 2026-02-08
 
 ### Added
@@ -26,7 +40,6 @@
   - Schema is cached per workspace for instant reload on reopen
 - **Project-based storage** — collections, environments, and history are now scoped per workspace instead of shared globally
   - One-time automatic migration from global to workspace storage on first activation
-  - Secrets remain global (stored in VS Code's SecretStorage by design)
 
 ### Changed
 - `StorageService` now takes `workspaceState` as a third constructor parameter
@@ -37,8 +50,6 @@
 ### Added
 - Sidebar collection tree with folders and requests
 - Editor panel with query editor, variables, headers, and response viewer
-- Environment management with endpoint and header configuration
-- Secret storage with `${secret:KEY}` resolution
 - Import/export collections as JSON
 - Request history (last 50 entries)
 - Smart query template generation from request names

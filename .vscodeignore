@@ -1,0 +1,14 @@
+.vscode/**
+.github/**
+.claude/**
+node_modules/**
+src/**
+tsconfig.json
+esbuild.js
+vitest.config.ts
+**/*.ts
+**/*.map
+*.vsix
+CONTRIBUTING.md
+CODE_OF_CONDUCT.md
+SECURITY.md

@@ -1,69 +1,106 @@
 # GraphQL Client for VS Code
 
-A full-featured GraphQL client built into VS Code. Manage collections, switch environments, run queries, and explore your schema — all without leaving the editor.
+[![CI](https://github.com/poojithg14/GraphqlClient/actions/workflows/ci.yml/badge.svg)](https://github.com/poojithg14/GraphqlClient/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
+A full-featured GraphQL client extension for Visual Studio Code. Execute queries, manage collections, introspect schemas, and more — all without leaving your editor.
 
 ## Features
 
-### Collections & Requests
-- Organize queries, mutations, and subscriptions into collections with folders
-- Create requests with auto-generated query templates that detect patterns from the name (e.g., "GetUsers" generates a paginated list query, "CreateUser" generates a mutation with input type)
-- Import/export collections as JSON
-- Duplicate, rename, and delete with right-click context menus
-
-### Schema Introspection
-- Fetch and browse your GraphQL schema directly in the sidebar
-- Collapsible Queries and Mutations tree showing all available operations
-- Click any field to auto-generate a complete operation with:
-  - Proper variable declarations and types
-  - Argument usage
-  - Nested return field selection (depth 2, cycle-safe)
-  - Default variable values matching the schema types
-- Schema is cached per workspace for instant reload
-
-### Environments
-- Define multiple environments (dev, staging, production) with separate endpoints and headers
-- Switch active environment to target different servers
-- Per-workspace storage — each project gets its own collections, environments, and history
-
-### Secrets
-- Store sensitive values (API keys, tokens) in VS Code's secure secret storage
-- Reference secrets in headers and endpoints with `${secret:MY_KEY}` syntax
-- Secrets are resolved at execution time and never stored in plain text
-
-### Editor Panel
-- Full query editor with syntax highlighting
-- Variables editor with JSON validation
-- Custom headers per request
-- Response viewer with timing information
-- Request history (last 50 entries per workspace)
-- **Save prompt on close** — closing a dirty tab prompts Save / Don't Save / Cancel; closing the panel prompts to save all unsaved tabs
-- Dirty indicator dot on tabs with unsaved changes
+- **Query & Mutation Execution** — Send GraphQL operations with variables and custom headers
+- **Collections & Folders** — Organize saved requests into collections, import/export as JSON
+- **Schema Introspection** — Fetch and browse schemas with auto-generated operations from the field explorer
+- **Schema Diff & Impact Analysis** — Compare schema versions and see which saved queries break
+- **Auto-Heal Queries** — Automatically rename or remove fields broken by schema changes
+- **Query Cost Estimation** — Predict query complexity based on field count, depth, and list multipliers
+- **Security Analysis** — Detect depth attacks, alias abuse, sensitive fields, and missing pagination
+- **Performance Tracking** — Track response times with anomaly detection (Welford's algorithm)
+- **Natural Language to GraphQL** — Describe what you want in plain English and get a generated query
+- **GraphQL Service Detection** — Auto-discover running GraphQL endpoints by scanning workspace ports
 
 ## Getting Started
 
-1. Open the GraphQL Client from the activity bar (graph icon on the left)
-2. Create a collection and add a folder
-3. Add a request — the query template is auto-generated from the name
-4. Click the request to open it in the editor panel
-5. Hit **Execute** to run the query against your active environment
+### Prerequisites
 
-### Schema Introspection
+- [VS Code](https://code.visualstudio.com/) 1.85+
+- [Node.js](https://nodejs.org/) 18+ (for development)
 
-1. Make sure your active environment points to a running GraphQL endpoint
-2. In the sidebar, scroll down to **Schema Explorer**
-3. Click **Introspect Schema** (or the refresh button)
-4. Browse the Queries and Mutations tree
-5. Click any field to generate an operation and open it in the editor
+### Installation
 
-## Requirements
+1. Clone the repository:
+   ```bash
+   git clone https://github.com/poojithg14/GraphqlClient.git
+   cd GraphqlClient
+   ```
+2. Install dependencies:
+   ```bash
+   npm install
+   ```
+3. Build the extension:
+   ```bash
+   npm run build
+   ```
+4. Press **F5** in VS Code to launch the Extension Development Host
 
-- VS Code 1.85.0 or later
-- A GraphQL endpoint that supports introspection (for schema features)
+### Usage
 
-## Authors
+1. Open the **GraphQL Client** panel from the Activity Bar
+2. Enter your endpoint URL and any required headers
+3. Write your query and click **Execute**
+4. Use the sidebar to manage collections, browse schemas, and view history
 
-- **Poojith Gavini** — Author
-- **Sujjad Ali Mohammad** — Co-contributor
-- **Dinesh Bukya** — Co-contributor
-- **Ganesh Pinjala** — Co-contributor
-- **Kanishuk Reddy Lingareddy Gari** — Co-contributor
+## Development
+
+| Command | Description |
+|---------|-------------|
+| `npm run build` | Bundle the extension with esbuild |
+| `npm run watch` | Rebuild on file changes |
+| `npm run lint` | Type-check with TypeScript |
+| `npm test` | Run unit tests with Vitest |
+| `npm run test:watch` | Run tests in watch mode |
+
+## Project Structure
+
+```
+├── src/                    # TypeScript source
+│   ├── extension.ts        # Extension entry point
+│   ├── webviewProvider.ts  # Webview sidebar provider
+│   ├── editorPanel.ts      # Editor tab panels
+│   ├── graphqlExecutor.ts  # Query execution engine
+│   ├── schemaIntrospector.ts # Schema introspection
+│   ├── schemaDiffer.ts     # Schema diff & impact analysis
+│   ├── queryHealer.ts      # Auto-heal broken queries
+│   ├── queryCostCalculator.ts # Query cost estimation
+│   ├── querySecurityAnalyzer.ts # Security analysis
+│   ├── sdlParser.ts        # SDL / JSON schema parser
+│   ├── responseDiffer.ts   # Cross-environment response diffing
+│   ├── performanceTracker.ts # Performance anomaly detection
+│   ├── nlToGraphql.ts      # Natural language to GraphQL
+│   ├── serviceDetector.ts  # GraphQL service auto-detection
+│   ├── storage.ts          # Workspace-scoped persistence
+│   └── types.ts            # Shared type definitions
+├── tests/                  # Unit tests (Vitest)
+├── docs/                   # Documentation
+├── media/                  # Webview HTML, CSS, JS
+├── resources/              # Extension icons
+└── dist/                   # Bundled output (gitignored)
+```
+
+## Documentation
+
+- [Architecture](docs/architecture.md) — system overview, component diagram, data flow
+- [Features](docs/features.md) — detailed documentation for every feature
+- [Message Protocol](docs/message-protocol.md) — webview ↔ extension host message reference
+- [Storage Model](docs/storage.md) — persistence layer, data models, migration
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup and guidelines.
+
+## Author
+
+**Poojith Gavini** — [GitHub](https://github.com/poojithg14)
+
+## License
+
+[MIT](LICENSE)

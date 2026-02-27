@@ -1,6 +1,6 @@
 # Architecture
 
-This document describes the high-level architecture of the GraphQL Client VS Code extension.
+This document describes the high-level architecture of the GraphQL CLNT VS Code extension.
 
 ## Overview
 

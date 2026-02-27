@@ -1,6 +1,6 @@
 ---
 name: Bug Report
-about: Report a bug in the GraphQL Client extension
+about: Report a bug in the GraphQL CLNT extension
 title: "[Bug] "
 labels: bug
 assignees: ""

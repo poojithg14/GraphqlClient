@@ -25,6 +25,3 @@ yarn-error.log*
 
 # TypeScript
 *.tsbuildinfo
-
-# Claude Code
-.claude/

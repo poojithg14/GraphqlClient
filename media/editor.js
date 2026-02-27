@@ -327,7 +327,7 @@
     if (!state.activeTabId) {
       content.appendChild(el('div', { className: 'welcome' }, [
         el('div', { className: 'welcome-icon', textContent: '{ }' }),
-        el('div', { className: 'welcome-text', textContent: 'GraphQL Client' }),
+        el('div', { className: 'welcome-text', textContent: 'GraphQL CLNT' }),
         el('div', { className: 'welcome-hint', textContent: 'Select a request from the sidebar to get started' }),
       ]));
       return;

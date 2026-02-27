@@ -1,9 +1,9 @@
 {
-  "name": "graphql-client",
-  "displayName": "GraphQL Client",
+  "name": "graphql-clnt",
+  "displayName": "GraphQL CLNT",
   "description": "A full-featured GraphQL client for VS Code with collections, schema introspection, and query analysis",
   "version": "0.4.0",
-  "publisher": "graphql-client",
+  "publisher": "PoojithGavini",
   "repository": {
     "type": "git",
     "url": "https://github.com/poojithg14/GraphqlClient.git"
@@ -14,8 +14,22 @@
     "vscode": "^1.85.0"
   },
   "categories": [
-    "Other"
+    "Programming Languages",
+    "Snippets",
+    "Testing"
   ],
+  "keywords": [
+    "graphql",
+    "api",
+    "client",
+    "schema",
+    "query"
+  ],
+  "icon": "resources/icon.png",
+  "galleryBanner": {
+    "color": "#1a1a2e",
+    "theme": "dark"
+  },
   "activationEvents": [],
   "main": "./dist/extension.js",
   "contributes": {
@@ -23,7 +37,7 @@
       "activitybar": [
         {
           "id": "graphqlClient",
-          "title": "GraphQL Client",
+          "title": "GraphQL CLNT",
           "icon": "resources/icon.svg"
         }
       ]
@@ -33,22 +47,22 @@
         {
           "type": "webview",
           "id": "graphqlClient.mainView",
-          "name": "GraphQL Client"
+          "name": "GraphQL CLNT"
         }
       ]
     },
     "commands": [
       {
         "command": "graphqlClient.open",
-        "title": "Open GraphQL Client"
+        "title": "Open GraphQL CLNT"
       },
       {
         "command": "graphqlClient.importCollection",
-        "title": "GraphQL Client: Import Collection"
+        "title": "GraphQL CLNT: Import Collection"
       },
       {
         "command": "graphqlClient.exportCollections",
-        "title": "GraphQL Client: Export Collections"
+        "title": "GraphQL CLNT: Export Collections"
       }
     ]
   },
@@ -57,11 +71,13 @@
     "watch": "node esbuild.js --watch",
     "lint": "tsc --noEmit",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "package": "vsce package"
   },
   "devDependencies": {
     "@types/node": "^25.2.1",
     "@types/vscode": "^1.85.0",
+    "@vscode/vsce": "^3.7.1",
     "esbuild": "^0.20.0",
     "typescript": "^5.3.0",
     "vitest": "^4.0.18"

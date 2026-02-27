@@ -1,9 +1,13 @@
-# GraphQL Client for VS Code
+# GraphQL CLNT for VS Code
 
 [![CI](https://github.com/poojithg14/GraphqlClient/actions/workflows/ci.yml/badge.svg)](https://github.com/poojithg14/GraphqlClient/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 A full-featured GraphQL client extension for Visual Studio Code. Execute queries, manage collections, introspect schemas, and more — all without leaving your editor.
+
+## Install from Marketplace
+
+Search for **"GraphQL CLNT"** in the VS Code Extensions view, or install from the [Visual Studio Marketplace](https://marketplace.visualstudio.com/items?itemName=PoojithGavini.graphql-clnt).
 
 ## Features
 
@@ -44,7 +48,7 @@ A full-featured GraphQL client extension for Visual Studio Code. Execute queries
 
 ### Usage
 
-1. Open the **GraphQL Client** panel from the Activity Bar
+1. Open the **GraphQL CLNT** panel from the Activity Bar
 2. Enter your endpoint URL and any required headers
 3. Write your query and click **Execute**
 4. Use the sidebar to manage collections, browse schemas, and view history
@@ -97,9 +101,11 @@ A full-featured GraphQL client extension for Visual Studio Code. Execute queries
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup and guidelines.
 
-## Author
+## Contributors
 
-**Poojith Gavini** — [GitHub](https://github.com/poojithg14)
+- **Poojith Gavini** — [GitHub](https://github.com/poojithg14)
+- **Ganesh Pinjala**
+- **Dinesh Bukya**
 
 ## License
 

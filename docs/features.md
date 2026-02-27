@@ -1,6 +1,6 @@
 # Features
 
-Detailed documentation for each feature in the GraphQL Client extension.
+Detailed documentation for each feature in the GraphQL CLNT extension.
 
 ---
 

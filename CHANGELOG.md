@@ -18,7 +18,7 @@
 
 ### Added
 - **Save prompt on tab close** — closing a tab with unsaved changes now shows a "Save changes to {name}?" dialog with Save, Don't Save, and Cancel options
-- **Save prompt on panel close** — closing the entire GraphQL Client panel prompts to save all unsaved tabs via a VS Code native warning dialog with Save All / Don't Save
+- **Save prompt on panel close** — closing the entire GraphQL CLNT panel prompts to save all unsaved tabs via a VS Code native warning dialog with Save All / Don't Save
 - **Dirty state tracking** — tabs are tracked as dirty when query, variables, or headers differ from their original values at open time
 - **Dirty tab indicator** — a dot indicator appears on tabs with unsaved changes
 

@@ -1,6 +1,6 @@
 ---
 name: Feature Request
-about: Suggest a new feature for the GraphQL Client extension
+about: Suggest a new feature for the GraphQL CLNT extension
 title: "[Feature] "
 labels: enhancement
 assignees: ""

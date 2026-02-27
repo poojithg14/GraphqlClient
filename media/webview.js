@@ -2,7 +2,7 @@
 /* eslint-disable */
 
 /**
- * GraphQL Client — VS Code Webview UI
+ * GraphQL CLNT — VS Code Webview UI
  * Plain HTML/CSS/JS, zero framework dependencies
  */
 
@@ -409,7 +409,7 @@
     if (!state.activeTabId) {
       content.appendChild(el('div', { className: 'welcome' }, [
         el('div', { className: 'welcome-icon', textContent: '{ }' }),
-        el('div', { className: 'welcome-text', textContent: 'GraphQL Client' }),
+        el('div', { className: 'welcome-text', textContent: 'GraphQL CLNT' }),
         el('div', { className: 'welcome-hint', textContent: 'Open or create a request to get started' }),
       ]));
       return;

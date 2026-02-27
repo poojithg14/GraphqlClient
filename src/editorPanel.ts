@@ -74,7 +74,7 @@ export class EditorPanelManager {
   private createPanel(request: GraphQLRequest | { id: string; name: string; type: string; query: string; variables: string; headers: Record<string, string> }): void {
     this.panel = vscode.window.createWebviewPanel(
       'graphqlClient.editor',
-      'GraphQL Client',
+      'GraphQL CLNT',
       vscode.ViewColumn.One,
       {
         enableScripts: true,
@@ -456,7 +456,7 @@ export class EditorPanelManager {
   <meta http-equiv="Content-Security-Policy"
     content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}'; font-src ${webview.cspSource};">
   <link rel="stylesheet" href="${cssUri}">
-  <title>GraphQL Client</title>
+  <title>GraphQL CLNT</title>
 </head>
 <body>
   <div id="app"></div>

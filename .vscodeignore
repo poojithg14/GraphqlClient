@@ -1,6 +1,5 @@
 .vscode/**
 .github/**
-.claude/**
 node_modules/**
 src/**
 tsconfig.json
@@ -9,6 +8,9 @@ vitest.config.ts
 **/*.ts
 **/*.map
 *.vsix
+tests/**
+docs/**
+nul
 CONTRIBUTING.md
 CODE_OF_CONDUCT.md
 SECURITY.md

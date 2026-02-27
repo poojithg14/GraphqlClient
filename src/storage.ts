@@ -121,6 +121,10 @@ export class StorageService {
     return this.workspaceState.get<ImpactReport>(KEYS.impactReport);
   }
 
+  clearImpactReport(): void {
+    this.workspaceState.update(KEYS.impactReport, undefined);
+  }
+
   // ── AI Config ──
 
   saveAIConfig(config: AIProviderConfig): void {
@@ -214,7 +218,7 @@ export class StorageService {
 
     for (const { full, key } of replacements) {
       const value = await this.getSecret(key);
-      result = result.replace(full, value ?? '');
+      result = result.replaceAll(full, value ?? '');
     }
 
     return result;

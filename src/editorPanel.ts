@@ -1,3 +1,4 @@
+import * as crypto from 'crypto';
 import * as vscode from 'vscode';
 import { StorageService } from './storage';
 import { executeGraphQLQuery } from './graphqlExecutor';
@@ -6,7 +7,7 @@ import { analyzeQuerySecurity } from './querySecurityAnalyzer';
 import { updatePerformanceStats, detectAnomaly } from './performanceTracker';
 import { parseNaturalLanguage, generateFromNL, callAIProvider, generateResolverStub } from './nlToGraphql';
 import { generateOperationString } from './schemaIntrospector';
-import type { GraphQLRequest, ProvenanceEntry } from './types';
+import type { GraphQLRequest } from './types';
 
 interface DirtyTab {
   id: string;
@@ -20,6 +21,8 @@ interface DirtyTab {
 export class EditorPanelManager {
   private panel: vscode.WebviewPanel | undefined;
   private dirtyTabs: DirtyTab[] = [];
+  private webviewReady = false;
+  private pendingMessages: Array<{ type: string; payload: unknown }> = [];
 
   constructor(
     private readonly extensionUri: vscode.Uri,
@@ -39,11 +42,10 @@ export class EditorPanelManager {
   /** Add returnTypeName, availableFields, operationArgs from schema if missing */
   private enrichRequestWithSchema(
     request: GraphQLRequest | { id: string; name: string; type: string; query: string; variables: string; headers: Record<string, string> },
-  ): typeof request & Record<string, unknown> {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const req = request as any;
+  ): Record<string, unknown> {
+    const req = request as Record<string, unknown>;
     // Skip if already enriched
-    if (req.availableFields && req.availableFields.length > 0) {
+    if (Array.isArray(req.availableFields) && req.availableFields.length > 0) {
       return req;
     }
     const schema = this.storage.loadSchema();
@@ -71,7 +73,7 @@ export class EditorPanelManager {
     }
   }
 
-  private createPanel(request: GraphQLRequest | { id: string; name: string; type: string; query: string; variables: string; headers: Record<string, string> }): void {
+  private createPanel(request: Record<string, unknown>): void {
     this.panel = vscode.window.createWebviewPanel(
       'graphqlClient.editor',
       'GraphQL CLNT',
@@ -87,12 +89,12 @@ export class EditorPanelManager {
 
     this.panel.iconPath = vscode.Uri.joinPath(this.extensionUri, 'resources', 'icon.svg');
     this.panel.webview.html = this.getHtmlContent(this.panel.webview);
+    this.webviewReady = false;
+    this.pendingMessages = [];
     this.setupMessageHandler(this.panel.webview);
 
-    // Send initial request after a short delay so the webview JS has loaded
-    setTimeout(() => {
-      this.panel?.webview.postMessage({ type: 'openRequest', payload: request });
-    }, 100);
+    // Queue the initial request — it will be sent when the webview signals ready
+    this.pendingMessages.push({ type: 'openRequest', payload: request });
 
     this.panel.onDidDispose(async () => {
       if (this.dirtyTabs.length > 0) {
@@ -114,6 +116,14 @@ export class EditorPanelManager {
   private setupMessageHandler(webview: vscode.Webview): void {
     webview.onDidReceiveMessage(async (message) => {
       switch (message.type) {
+        case 'webviewReady':
+          this.webviewReady = true;
+          for (const msg of this.pendingMessages) {
+            webview.postMessage(msg);
+          }
+          this.pendingMessages = [];
+          break;
+
         case 'executeQuery':
           await this.handleExecuteQuery(webview, message.payload);
           break;
@@ -191,7 +201,7 @@ export class EditorPanelManager {
           // Create new collection if needed
           if (!targetColId && newCollectionName) {
             const newCol = {
-              id: 'col-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7),
+              id: 'col-' + crypto.randomUUID(),
               name: newCollectionName,
               folders: [],
             };
@@ -202,7 +212,7 @@ export class EditorPanelManager {
           // Create new folder if needed
           if (targetColId && !targetFolderId && newFolderName) {
             const newFolder = {
-              id: 'folder-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7),
+              id: 'folder-' + crypto.randomUUID(),
               name: newFolderName,
               requests: [],
             };
@@ -300,9 +310,9 @@ export class EditorPanelManager {
             provenance = { requestId, entries: [] };
           }
           provenance.entries.push(entry);
-          // Cap at 100 entries
-          if (provenance.entries.length > 100) {
-            provenance.entries = provenance.entries.slice(-100);
+          const MAX_PROVENANCE_ENTRIES = 100;
+          if (provenance.entries.length > MAX_PROVENANCE_ENTRIES) {
+            provenance.entries = provenance.entries.slice(-MAX_PROVENANCE_ENTRIES);
           }
           this.storage.saveProvenance(requestId, provenance);
           break;
@@ -467,10 +477,5 @@ export class EditorPanelManager {
 }
 
 function getNonce(): string {
-  let text = '';
-  const possible = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-  for (let i = 0; i < 32; i++) {
-    text += possible.charAt(Math.floor(Math.random() * possible.length));
-  }
-  return text;
+  return crypto.randomBytes(16).toString('hex');
 }

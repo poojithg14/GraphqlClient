@@ -15,6 +15,17 @@ export interface ExecuteResult {
 export async function executeGraphQLQuery(options: ExecuteOptions): Promise<ExecuteResult> {
   const { endpoint, query, variables, headers } = options;
 
+  // Validate endpoint URL scheme
+  try {
+    const url = new URL(endpoint);
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+      throw new Error(`Unsupported protocol: ${url.protocol} — only http and https are allowed`);
+    }
+  } catch (e) {
+    if (e instanceof Error && e.message.startsWith('Unsupported protocol')) throw e;
+    throw new Error(`Invalid endpoint URL: ${endpoint}`);
+  }
+
   // Parse variables JSON
   let parsedVariables: Record<string, unknown> | undefined;
   if (variables && variables.trim()) {
@@ -63,8 +74,8 @@ export async function executeGraphQLQuery(options: ExecuteOptions): Promise<Exec
     const text = await response.text();
     responseSize = new TextEncoder().encode(text).length;
     data = JSON.parse(text);
-  } catch {
-    throw new Error('Failed to parse response as JSON');
+  } catch (e) {
+    throw new Error('Failed to parse response as JSON', { cause: e });
   }
 
   return { data, responseTime, statusCode, responseSize };

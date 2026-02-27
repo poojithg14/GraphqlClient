@@ -1,3 +1,4 @@
+import * as crypto from 'crypto';
 import * as vscode from 'vscode';
 import { StorageService } from './storage';
 import { introspectSchema, generateOperationString } from './schemaIntrospector';
@@ -5,7 +6,7 @@ import { diffSchemas, extractFieldsFromQuery } from './schemaDiffer';
 import { healQuery } from './queryHealer';
 import { parseNaturalLanguage, generateFromNL, callAIProvider, generateResolverStub } from './nlToGraphql';
 import { parseSchemaInput } from './sdlParser';
-import type { Collection, QueryImpactEntry, ImpactReport, SchemaFieldChange, QueryHealFix } from './types';
+import type { Collection, QueryImpactEntry, ImpactReport, SchemaFieldChange, QueryHealFix, SchemaDiffResult, IntrospectedSchema } from './types';
 
 /**
  * Sidebar WebviewView — shows only the collection tree.
@@ -90,6 +91,12 @@ export class GraphQLClientViewProvider implements vscode.WebviewViewProvider {
 
         case 'saveCollections':
           this.storage.saveCollections(message.payload);
+          if (!message.payload.some((c: Collection) => c.folders.some((f: { requests: unknown[] }) => f.requests.length > 0))) {
+            this.storage.clearImpactReport();
+            webview.postMessage({ type: 'impactReportReady', payload: null });
+          } else {
+            this.refreshImpactReport();
+          }
           break;
 
         case 'openRequest':
@@ -133,6 +140,12 @@ export class GraphQLClientViewProvider implements vscode.WebviewViewProvider {
           break;
 
         case 'loadImpactReport': {
+          const collections = this.storage.loadCollections();
+          const hasRequests = collections.some((c: Collection) => c.folders.some(f => f.requests.length > 0));
+          if (!hasRequests) {
+            this.storage.clearImpactReport();
+            break;
+          }
           const report = this.storage.loadImpactReport();
           if (report) {
             webview.postMessage({ type: 'impactReportLoaded', payload: report });
@@ -217,7 +230,7 @@ export class GraphQLClientViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
-  private buildImpactReport(diff: import('./types').SchemaDiffResult, schema: import('./types').IntrospectedSchema): ImpactReport {
+  private buildImpactReport(diff: SchemaDiffResult, schema: IntrospectedSchema): ImpactReport {
     const collections = this.storage.loadCollections();
     const entries: QueryImpactEntry[] = [];
 
@@ -449,11 +462,19 @@ export class GraphQLClientViewProvider implements vscode.WebviewViewProvider {
     try {
       const data = await vscode.workspace.fs.readFile(uris[0]);
       const text = Buffer.from(data).toString('utf-8');
-      const collections: Collection[] = JSON.parse(text);
+      const parsed: unknown = JSON.parse(text);
 
-      if (!Array.isArray(collections)) {
+      if (!Array.isArray(parsed)) {
         throw new Error('Invalid collection format: expected an array');
       }
+
+      for (const col of parsed) {
+        if (!col || typeof col !== 'object' || typeof (col as Record<string, unknown>).name !== 'string' || !Array.isArray((col as Record<string, unknown>).folders)) {
+          throw new Error('Invalid collection format: each collection must have a name and folders array');
+        }
+      }
+
+      const collections = parsed as Collection[];
 
       webview.postMessage({
         type: 'importedCollections',
@@ -508,10 +529,5 @@ export class GraphQLClientViewProvider implements vscode.WebviewViewProvider {
 }
 
 function getNonce(): string {
-  let text = '';
-  const possible = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-  for (let i = 0; i < 32; i++) {
-    text += possible.charAt(Math.floor(Math.random() * possible.length));
-  }
-  return text;
+  return crypto.randomBytes(16).toString('hex');
 }

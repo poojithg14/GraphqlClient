@@ -2,19 +2,23 @@ import type { IntrospectedSchema, SecurityAnalysisResult, SecurityIssue, Securit
 import { extractFieldsFromQuery, unwrapType } from './schemaDiffer';
 
 const SENSITIVE_PATTERN = /password|secret|token|apiKey|api_key|ssn|creditCard|credit_card|cvv/i;
+const DEPTH_CRITICAL_THRESHOLD = 5;
+const DEPTH_WARNING_THRESHOLD = 3;
+const ALIAS_ABUSE_THRESHOLD = 3;
+const SEVERITY_DEDUCTIONS: Record<string, number> = { critical: 30, warning: 15, info: 5 };
 
 export function analyzeQuerySecurity(queryText: string, schema?: IntrospectedSchema): SecurityAnalysisResult {
   const analysis = extractFieldsFromQuery(queryText, schema);
   const issues: SecurityIssue[] = [];
 
   // 1. Depth attack detection
-  if (analysis.maxDepth > 5) {
+  if (analysis.maxDepth > DEPTH_CRITICAL_THRESHOLD) {
     issues.push({
       rule: 'depth-attack',
       severity: 'critical',
       message: `Query depth ${analysis.maxDepth} exceeds safe limit (5). This may cause exponential server load.`,
     });
-  } else if (analysis.maxDepth > 3) {
+  } else if (analysis.maxDepth > DEPTH_WARNING_THRESHOLD) {
     issues.push({
       rule: 'depth-attack',
       severity: 'warning',
@@ -65,7 +69,7 @@ export function analyzeQuerySecurity(queryText: string, schema?: IntrospectedSch
     }
   }
   for (const [fieldName, count] of aliasGroups) {
-    if (count >= 3) {
+    if (count >= ALIAS_ABUSE_THRESHOLD) {
       issues.push({
         rule: 'alias-abuse',
         severity: 'critical',
@@ -107,9 +111,7 @@ export function analyzeQuerySecurity(queryText: string, schema?: IntrospectedSch
   // Score: start 100, deduct per issue severity
   let score = 100;
   for (const issue of issues) {
-    if (issue.severity === 'critical') score -= 30;
-    else if (issue.severity === 'warning') score -= 15;
-    else score -= 5;
+    score -= SEVERITY_DEDUCTIONS[issue.severity] ?? 0;
   }
   score = Math.max(0, score);
 

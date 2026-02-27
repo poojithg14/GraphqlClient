@@ -11,8 +11,11 @@ const buildOptions = {
   format: 'cjs',
   platform: 'node',
   target: 'node18',
-  sourcemap: true,
+  sourcemap: watch,
   minify: !watch,
+  treeShaking: true,
+  logLevel: 'info',
+  metafile: !watch,
 };
 
 async function main() {

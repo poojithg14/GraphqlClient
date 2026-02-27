@@ -1,4 +1,5 @@
 .vscode/**
+.claude/**
 .github/**
 node_modules/**
 src/**

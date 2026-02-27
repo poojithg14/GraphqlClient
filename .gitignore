@@ -11,6 +11,9 @@ dist/
 .vscode/
 .idea/
 
+# Claude Code
+.claude/
+
 # System files
 .DS_Store
 
@@ -25,3 +28,6 @@ yarn-error.log*
 
 # TypeScript
 *.tsbuildinfo
+
+# Windows artifacts
+nul

@@ -66,12 +66,19 @@
       }
     ]
   },
+  "homepage": "https://github.com/poojithg14/GraphqlClient",
+  "bugs": {
+    "url": "https://github.com/poojithg14/GraphqlClient/issues"
+  },
   "scripts": {
+    "vscode:prepublish": "npm run build",
     "build": "node esbuild.js",
     "watch": "node esbuild.js --watch",
     "lint": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\"",
     "package": "vsce package"
   },
   "devDependencies": {

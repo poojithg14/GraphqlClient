@@ -3,58 +3,57 @@ import type { DiffNode, EnvExecutionResult } from './types';
 const MAX_DEPTH = 10;
 const MAX_NODES = 5000;
 
-let nodeCount = 0;
+interface DiffContext {
+  nodeCount: number;
+}
 
 /** Recursively diff two JSON values */
 export function diffResponses(left: unknown, right: unknown, path: string = '$'): DiffNode[] {
-  nodeCount = 0;
-  return diffRecursive(left, right, path, 0);
+  const ctx: DiffContext = { nodeCount: 0 };
+  return diffRecursive(ctx, left, right, path, 0);
 }
 
-function diffRecursive(left: unknown, right: unknown, path: string, depth: number): DiffNode[] {
-  if (depth > MAX_DEPTH || nodeCount > MAX_NODES) return [];
+function diffRecursive(ctx: DiffContext, left: unknown, right: unknown, path: string, depth: number): DiffNode[] {
+  if (depth > MAX_DEPTH || ctx.nodeCount > MAX_NODES) return [];
 
   // Both null/undefined
   if (left === right) {
-    nodeCount++;
+    ctx.nodeCount++;
     return [{ path, type: 'same', leftValue: left, rightValue: right }];
   }
 
   // One side missing
   if (left === undefined || left === null) {
-    nodeCount++;
+    ctx.nodeCount++;
     return [{ path, type: 'added', rightValue: right }];
   }
   if (right === undefined || right === null) {
-    nodeCount++;
+    ctx.nodeCount++;
     return [{ path, type: 'removed', leftValue: left }];
   }
 
   // Different types
   if (typeof left !== typeof right) {
-    nodeCount++;
+    ctx.nodeCount++;
     return [{ path, type: 'changed', leftValue: left, rightValue: right }];
   }
 
   // Arrays
   if (Array.isArray(left) && Array.isArray(right)) {
-    return diffArrays(left, right, path, depth);
+    return diffArrays(ctx, left, right, path, depth);
   }
 
   // Objects
   if (typeof left === 'object' && typeof right === 'object' && !Array.isArray(left) && !Array.isArray(right)) {
-    return diffObjects(left as Record<string, unknown>, right as Record<string, unknown>, path, depth);
+    return diffObjects(ctx, left as Record<string, unknown>, right as Record<string, unknown>, path, depth);
   }
 
-  // Scalars
-  nodeCount++;
-  if (left === right) {
-    return [{ path, type: 'same', leftValue: left, rightValue: right }];
-  }
+  // Scalars (left !== right guaranteed by first check)
+  ctx.nodeCount++;
   return [{ path, type: 'changed', leftValue: left, rightValue: right }];
 }
 
-function diffArrays(left: unknown[], right: unknown[], path: string, depth: number): DiffNode[] {
+function diffArrays(ctx: DiffContext, left: unknown[], right: unknown[], path: string, depth: number): DiffNode[] {
   const nodes: DiffNode[] = [];
   const maxLen = Math.max(left.length, right.length);
 
@@ -76,38 +75,38 @@ function diffArrays(left: unknown[], right: unknown[], path: string, depth: numb
       if (id !== null && rightIdMap.has(id)) {
         const match = rightIdMap.get(id)!;
         matchedRight.add(match.idx);
-        const children = diffRecursive(left[i], match.item, `${path}[${i}]`, depth + 1);
+        const children = diffRecursive(ctx, left[i], match.item, `${path}[${i}]`, depth + 1);
         const allSame = children.every(c => c.type === 'same');
-        nodeCount++;
+        ctx.nodeCount++;
         nodes.push({ path: `${path}[${i}]`, type: allSame ? 'same' : 'changed', leftValue: left[i], rightValue: match.item, children: allSame ? undefined : children });
       } else {
-        nodeCount++;
+        ctx.nodeCount++;
         nodes.push({ path: `${path}[${i}]`, type: 'removed', leftValue: left[i] });
       }
-      if (nodeCount > MAX_NODES) break;
+      if (ctx.nodeCount > MAX_NODES) break;
     }
 
     for (let i = 0; i < right.length; i++) {
       if (!matchedRight.has(i)) {
-        nodeCount++;
+        ctx.nodeCount++;
         nodes.push({ path: `${path}[${i}]`, type: 'added', rightValue: right[i] });
       }
-      if (nodeCount > MAX_NODES) break;
+      if (ctx.nodeCount > MAX_NODES) break;
     }
   } else {
     // Align by index
     for (let i = 0; i < maxLen; i++) {
-      if (nodeCount > MAX_NODES) break;
+      if (ctx.nodeCount > MAX_NODES) break;
       if (i >= left.length) {
-        nodeCount++;
+        ctx.nodeCount++;
         nodes.push({ path: `${path}[${i}]`, type: 'added', rightValue: right[i] });
       } else if (i >= right.length) {
-        nodeCount++;
+        ctx.nodeCount++;
         nodes.push({ path: `${path}[${i}]`, type: 'removed', leftValue: left[i] });
       } else {
-        const children = diffRecursive(left[i], right[i], `${path}[${i}]`, depth + 1);
+        const children = diffRecursive(ctx, left[i], right[i], `${path}[${i}]`, depth + 1);
         const allSame = children.every(c => c.type === 'same');
-        nodeCount++;
+        ctx.nodeCount++;
         nodes.push({ path: `${path}[${i}]`, type: allSame ? 'same' : 'changed', leftValue: left[i], rightValue: right[i], children: allSame ? undefined : children });
       }
     }
@@ -116,27 +115,27 @@ function diffArrays(left: unknown[], right: unknown[], path: string, depth: numb
   return nodes;
 }
 
-function diffObjects(left: Record<string, unknown>, right: Record<string, unknown>, path: string, depth: number): DiffNode[] {
+function diffObjects(ctx: DiffContext, left: Record<string, unknown>, right: Record<string, unknown>, path: string, depth: number): DiffNode[] {
   const nodes: DiffNode[] = [];
   const allKeys = new Set([...Object.keys(left), ...Object.keys(right)]);
 
   for (const key of allKeys) {
-    if (nodeCount > MAX_NODES) break;
+    if (ctx.nodeCount > MAX_NODES) break;
     const keyPath = `${path}.${key}`;
     if (!(key in left)) {
-      nodeCount++;
+      ctx.nodeCount++;
       nodes.push({ path: keyPath, type: 'added', rightValue: right[key] });
     } else if (!(key in right)) {
-      nodeCount++;
+      ctx.nodeCount++;
       nodes.push({ path: keyPath, type: 'removed', leftValue: left[key] });
     } else {
-      const children = diffRecursive(left[key], right[key], keyPath, depth + 1);
+      const children = diffRecursive(ctx, left[key], right[key], keyPath, depth + 1);
       const allSame = children.every(c => c.type === 'same');
       if (allSame) {
-        nodeCount++;
+        ctx.nodeCount++;
         nodes.push({ path: keyPath, type: 'same', leftValue: left[key], rightValue: right[key] });
       } else {
-        nodeCount++;
+        ctx.nodeCount++;
         nodes.push({ path: keyPath, type: 'changed', leftValue: left[key], rightValue: right[key], children });
       }
     }

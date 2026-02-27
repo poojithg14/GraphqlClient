@@ -77,7 +77,7 @@ export function activate(context: vscode.ExtensionContext): void {
         }
       }
     };
-    resolveEndpoint();
+    resolveEndpoint().catch(() => { /* endpoint detection is best-effort */ });
   }
 
   context.subscriptions.push(

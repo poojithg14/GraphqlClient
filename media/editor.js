@@ -18,6 +18,9 @@
 
   let tabStates = {};
   let isLoading = false;
+
+  // Signal to the extension host that the webview is ready
+  vscode.postMessage({ type: 'webviewReady' });
   let contextMenu = null;
 
   function saveState() { vscode.setState(state); }

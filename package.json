@@ -2,7 +2,7 @@
   "name": "graphql-clnt",
   "displayName": "GraphQL CLNT",
   "description": "A full-featured GraphQL client for VS Code with collections, schema introspection, and query analysis",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "publisher": "PoojithGavini",
   "repository": {
     "type": "git",

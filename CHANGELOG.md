@@ -3,11 +3,9 @@
 ## [0.4.0] - 2026-02-15
 
 ### Added
-- **Unit tests** — 112 tests across 8 modules using Vitest (sdlParser, schemaDiffer, queryCostCalculator, querySecurityAnalyzer, responseDiffer, performanceTracker, queryHealer, nlToGraphql)
+- **Unit tests** — 138 tests across 11 modules using Vitest
 - **CI pipeline** — GitHub Actions workflow running lint, test, and build on Node 18/20/22
-- **GitHub templates** — Bug report and feature request issue templates, pull request template
 - **Documentation** — Architecture overview, feature reference, message protocol, and storage model docs in `docs/`
-- **CONTRIBUTING.md** — Development setup and contribution guidelines
 
 ### Changed
 - Project restructured from `graphql-client/` subdirectory to repository root

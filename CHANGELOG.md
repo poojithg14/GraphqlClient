@@ -1,6 +1,11 @@
 # Changelog
 
-## 0.4.2 — Initial Release
+## 0.4.2
+
+- Show broken field warnings in Fields & Arguments panel when opening queries from impact analysis
+- Pass broken field context (renamed/removed) from impact report to editor
+
+## 0.4.1 — Initial Release
 
 ### Features
 - **Query & Mutation Execution** — Send GraphQL operations with variables and custom headers

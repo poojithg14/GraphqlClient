@@ -368,6 +368,17 @@ html, body {
 .arg-required { color: var(--vscode-errorForeground, #f14c4c); font-size: 11px; flex-shrink: 0; }
 .arg-error { color: var(--vscode-errorForeground, #f14c4c); font-size: 11px; flex-shrink: 0; }
 
+/* ── Broken Field Warnings ── */
+.broken-field-warning {
+  display: flex; align-items: center; gap: 6px;
+  padding: 4px 8px; margin: 2px 0; border-radius: 3px;
+  font-size: 12px;
+  font-family: var(--vscode-editor-font-family, 'Consolas', 'Courier New', monospace);
+  background: rgba(241, 76, 76, 0.1);
+  border-left: 3px solid var(--vscode-inputValidation-errorBorder, #f14c4c);
+  color: var(--vscode-errorForeground, #f14c4c);
+}
+
 /* ── Query Error Bar ── */
 .query-error-bar {
   display: flex; align-items: center; gap: 6px;

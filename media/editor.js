@@ -147,6 +147,11 @@
     }
     state.activeTabId = req.id;
 
+    // Update brokenFields on existing tab when re-opening from impact analysis
+    if (tabStates[req.id] && req.brokenFields) {
+      tabStates[req.id].brokenFields = req.brokenFields;
+    }
+
     if (!tabStates[req.id]) {
       // Build initial argValues from variables JSON
       const argValues = {};
@@ -182,6 +187,7 @@
         operationArgs: operationArgs,
         argValues: argValues,
         bottomPanelExpanded: true,
+        brokenFields: req.brokenFields || [],
       };
     }
 
@@ -1237,7 +1243,8 @@
 
     const hasFields = ts.availableFields && ts.availableFields.length > 0;
     const hasArgs = ts.operationArgs && ts.operationArgs.length > 0;
-    if (!hasFields && !hasArgs) return null;
+    const hasBrokenFields = ts.brokenFields && ts.brokenFields.length > 0;
+    if (!hasFields && !hasArgs && !hasBrokenFields) return null;
 
     const panel = el('div', { className: 'query-bottom-panel' });
 
@@ -1253,6 +1260,23 @@
     if (!ts.bottomPanelExpanded) return panel;
 
     const body = el('div', { className: 'query-bottom-panel-body' });
+
+    // Broken fields warnings (from impact analysis)
+    if (ts.brokenFields && ts.brokenFields.length > 0) {
+      ts.brokenFields.forEach(bf => {
+        const row = el('div', { className: 'broken-field-warning' });
+        let msg = '';
+        if (bf.changeType === 'renamed' && bf.suggestedReplacement) {
+          msg = '\u26A0 ' + bf.fieldName + ' was renamed to ' + bf.suggestedReplacement;
+        } else if (bf.changeType === 'removed') {
+          msg = '\u26A0 ' + bf.fieldName + ' was removed from the schema';
+        } else {
+          msg = '\u26A0 ' + bf.fieldName + ' is no longer valid';
+        }
+        row.appendChild(el('span', { textContent: msg }));
+        body.appendChild(row);
+      });
+    }
 
     // Fields section (recursive)
     if (hasFields) {
@@ -1334,6 +1358,23 @@
     var newBody = el('div', { className: 'query-bottom-panel-body' });
     var hasFields = ts.availableFields && ts.availableFields.length > 0;
     var hasArgs = ts.operationArgs && ts.operationArgs.length > 0;
+
+    // Broken fields warnings (from impact analysis)
+    if (ts.brokenFields && ts.brokenFields.length > 0) {
+      ts.brokenFields.forEach(function(bf) {
+        var row = el('div', { className: 'broken-field-warning' });
+        var msg = '';
+        if (bf.changeType === 'renamed' && bf.suggestedReplacement) {
+          msg = '\u26A0 ' + bf.fieldName + ' was renamed to ' + bf.suggestedReplacement;
+        } else if (bf.changeType === 'removed') {
+          msg = '\u26A0 ' + bf.fieldName + ' was removed from the schema';
+        } else {
+          msg = '\u26A0 ' + bf.fieldName + ' is no longer valid';
+        }
+        row.appendChild(el('span', { textContent: msg }));
+        newBody.appendChild(row);
+      });
+    }
 
     if (hasFields) {
       newBody.appendChild(el('div', {

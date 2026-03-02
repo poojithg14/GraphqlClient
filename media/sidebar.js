@@ -1282,7 +1282,8 @@
                     state.selectedRequestId = req.id;
                     saveState();
                     renderTree();
-                    vscode.postMessage({ type: 'openRequest', payload: req });
+                    var enrichedReq = Object.assign({}, req, { brokenFields: entryRef.brokenFields });
+                    vscode.postMessage({ type: 'openRequest', payload: enrichedReq });
                     return;
                   }
                 }
